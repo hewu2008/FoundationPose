@@ -95,7 +95,7 @@ def run_linemod():
     cfg = yaml.safe_load(ff)
   for ob_id in ob_ids:
     base_dir = f'{args.ref_view_dir}/ob_{ob_id:07d}'
-    mesh = run_one_ob(base_dir=base_dir, cfg=cfg, use_refined_mask=True)
+    mesh = run_one_ob(base_dir=base_dir, cfg=cfg, use_refined_mask=False)
     out_file = f'{base_dir}/model/model.obj'
     os.makedirs(os.path.dirname(out_file), exist_ok=True)
     mesh.export(out_file)
