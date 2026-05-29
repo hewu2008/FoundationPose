@@ -6,7 +6,7 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 
-model_id = "IDEA-Research/grounding-dino-tiny"
+model_id = "/home/jszn/hewu/model_zoo/grounding-dino-tiny"
 
 processor = AutoProcessor.from_pretrained(model_id)
 model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id, device_map="auto")
