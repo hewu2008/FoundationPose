@@ -23,6 +23,7 @@ from groundingdino.util.inference import load_model as dino_load_model, predict 
 import groundingdino.datasets.transforms as T
 from PIL import Image
 import torch
+import numpy as np
 from pinocchio_rokae import PinocchioJaka
 # --- FoundationPose Monkey Patching ---
 original_init = FoundationPose.__init__
@@ -338,8 +339,6 @@ class PoseEstimatorApp:
             # wait_robot(robot, ec)
             print("-" * 20)
 
-    import numpy as np
-
     def select_optimal_box(self, boxes_xyxy, depth_image, img_shape):
         if len(boxes_xyxy) == 0:
             return None
@@ -414,6 +413,7 @@ class PoseEstimatorApp:
 
         best_idx_in_results = np.argmax(total_scores)
         return results[best_idx_in_results]['original_index']
+
 def main():
     # 直接指定路径和坐标
     # mesh_path = "/home/jszn/wangcheng/FoundationPoseROS2/demo_data/box/small2.obj"
