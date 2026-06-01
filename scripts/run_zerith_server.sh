@@ -2,7 +2,7 @@
 
 export PYTHONPATH=/home/jszn/hewu/alg-product/FoundationPose
 
-python zerith/zerith_main.py \
+python zerith/zerith_server_main.py \
     --detector_id "/home/jszn/hewu/model_zoo/grounding-dino-tiny" \
     --segmenter_id "/home/jszn/hewu/model_zoo/sam-vit-base" \
     --mesh_file "demo_data/mustard0/mesh/textured_simple.obj" \
