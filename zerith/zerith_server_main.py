@@ -41,6 +41,7 @@ def create_pose_estimator(mesh_file, debug_dir):
         debug_dir=debug_dir
     )
 
+
 def create_segmentation(detector_id, segmenter_id):
     return ZerithSegmentation(
         detector_id=detector_id,

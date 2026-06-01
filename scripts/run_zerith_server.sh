@@ -8,5 +8,4 @@ python zerith/zerith_server_main.py \
     --mesh_file "demo_data/mustard0/mesh/textured_simple.obj" \
     --test_scene_dir "demo_data/mustard0" \
     --debug_dir "debug_mard0" \
-    --zmq_port 5555 
-        
+    --zmq_port 5555
