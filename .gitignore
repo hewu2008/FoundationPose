@@ -159,3 +159,6 @@ run_used.yml
 
 # scripts
 scripts/*.png
+
+# assets
+assets/
