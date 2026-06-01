@@ -6,12 +6,14 @@ import numpy as np
 import cv2
 import os
 import imageio
+import trimesh
 from datareader import YcbineoatReader
-
+from Utils import *
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Zerith FoundationPose Client')
     parser.add_argument('--video_dir', type=str, required=True, help='Path to video scene directory')
+    parser.add_argument('--mesh_file', type=str, required=True, help='Path to mesh OBJ file')
     parser.add_argument('--server_addr', type=str, default='tcp://localhost:5555', help='ZMQ server address')
     parser.add_argument('--debug_dir', type=str, default='./client_debug', help='Directory to save debug outputs')
     parser.add_argument('--labels', type=str, nargs='+', default=["object."], help='Detection labels for registration')
@@ -70,19 +72,15 @@ class ZerithFoundationPoseClient:
         self.context.term()
 
 
-def draw_posed_3d_box(K, img, ob_in_cam, bbox):
-    """Draw 3D bounding box on image"""
-    # This is a placeholder - you may need to import the actual function
-    return img.copy()
-
-
-def draw_xyz_axis(img, ob_in_cam, scale, K, thickness=3, transparency=0, is_input_rgb=True):
-    """Draw XYZ axis on image"""
-    # This is a placeholder - you may need to import the actual function
-    return img.copy()
-
-
 def main(args):
+    # Load mesh and compute bounding box
+    mesh = trimesh.load(args.mesh_file)
+    to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
+    bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2, 3)
+    print(f"Loaded mesh: {args.mesh_file}")
+    print(f"Mesh extents: {extents}")
+    print(f"Mesh bbox: {bbox}")
+    
     # Create client
     client = ZerithFoundationPoseClient(args.server_addr)
     
@@ -146,11 +144,18 @@ def main(args):
                 print(f"Tracking successful")
             
             # Save pose
-            np.savetxt(f'{args.debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4,4))
+            np.savetxt(f'{args.debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4, 4))
             
-            # Visualization (basic - you may want to use the actual draw functions)
-            vis = color.copy()
-            cv2.imshow('FoundationPose Tracking', vis[...,::-1])
+            # Compute center pose for visualization
+            center_pose = pose @ np.linalg.inv(to_origin)
+            
+            # Draw 3D bounding box and XYZ axis
+            vis = draw_posed_3d_box(reader.K, color.copy(), center_pose, bbox)
+            vis = draw_xyz_axis(vis, center_pose, scale=0.1, K=reader.K, thickness=3, 
+                              transparency=0, is_input_rgb=True)
+            
+            # Display visualization
+            cv2.imshow('FoundationPose Tracking', vis[..., ::-1])
             cv2.waitKey(1)
             
             # Save visualization

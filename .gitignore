@@ -163,3 +163,4 @@ scripts/*.png
 # assets
 assets/
 debug_mard0/
+client_debug/
