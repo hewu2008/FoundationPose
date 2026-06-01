@@ -6,6 +6,10 @@ import numpy as np
 import zmq
 import pickle
 import cv2
+import torch
+from PIL import Image
+from typing import List, Dict, Optional, Tuple, Any
+from transformers import AutoModelForMaskGeneration, AutoProcessor, pipeline
 from learning.training.predict_score import *
 from learning.training.predict_pose_refine import *
 from estimater import FoundationPose
@@ -15,11 +19,21 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Zerith FoundationPose Server')
     parser.add_argument('--mesh_file', type=str, required=True, help='Path to the mesh file (OBJ format)')
     parser.add_argument('--zmq_port', type=int, default=5555, help='ZMQ server port')
+    parser.add_argument('--detector_id', type=str, default="IDEA-Research/grounding-dino-tiny", help='Grounding DINO model ID')
+    parser.add_argument('--segmenter_id', type=str, default="facebook/sam-vit-base", help='Segment Anything model ID')
     return parser.parse_args()
 
 
+class DetectionResult:
+    def __init__(self, score: float, label: str, box: List[int], mask: Optional[np.array] = None):
+        self.score = score
+        self.label = label
+        self.box = box  # [xmin, ymin, xmax, ymax]
+        self.mask = mask
+
+
 class ZerithFoundationPoseServer:
-    def __init__(self, mesh_file):
+    def __init__(self, mesh_file, detector_id=None, segmenter_id=None):
         self.mesh_file = mesh_file
         self.mesh = trimesh.load(self.mesh_file)
         logging.info(f"Mesh loaded: {self.mesh_file}")
@@ -46,8 +60,114 @@ class ZerithFoundationPoseServer:
         logging.info(f"Load estimator successfully")
         
         self.is_initialized = False
+        
+        # Initialize Grounding DINO and SAM for automatic segmentation
+        self._init_segmentation_models(detector_id, segmenter_id)
 
-    def register(self, K, rgb, depth, ob_mask, iteration=5):
+    def _init_segmentation_models(self, detector_id=None, segmenter_id=None):
+        """Initialize Grounding DINO detector and SAM segmenter"""
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.detector_id = detector_id if detector_id is not None else "IDEA-Research/grounding-dino-tiny"
+        self.segmenter_id = segmenter_id if segmenter_id is not None else "facebook/sam-vit-base"
+        
+        logging.info(f"Loading Grounding DINO: {self.detector_id}")
+        self.object_detector = pipeline(
+            model=self.detector_id, 
+            task="zero-shot-object-detection", 
+            device=self.device
+        )
+        
+        logging.info(f"Loading SAM: {self.segmenter_id}")
+        self.segmentator = AutoModelForMaskGeneration.from_pretrained(self.segmenter_id).to(self.device)
+        self.processor = AutoProcessor.from_pretrained(self.segmenter_id)
+        
+        logging.info("Segmentation models loaded successfully")
+
+    def _refine_masks(self, masks: torch.BoolTensor, polygon_refinement: bool = False) -> List[np.ndarray]:
+        masks = masks.cpu().float()
+        masks = masks.permute(0, 2, 3, 1)
+        masks = masks.mean(axis=-1)
+        masks = (masks > 0).int()
+        masks = masks.numpy().astype(np.uint8)
+        masks = list(masks)
+        
+        if polygon_refinement:
+            for idx, mask in enumerate(masks):
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if contours:
+                    largest_contour = max(contours, key=cv2.contourArea)
+                    polygon = largest_contour.reshape(-1, 2).tolist()
+                    new_mask = np.zeros(mask.shape, dtype=np.uint8)
+                    pts = np.array(polygon, dtype=np.int32)
+                    cv2.fillPoly(new_mask, [pts], color=255)
+                    masks[idx] = new_mask
+        
+        return masks
+
+    def _detect(self, image: Image.Image, labels: List[str], threshold: float = 0.3) -> List[DetectionResult]:
+        """Use Grounding DINO to detect objects"""
+        labels = [label if label.endswith(".") else label + "." for label in labels]
+        results = self.object_detector(image, candidate_labels=labels, threshold=threshold)
+        
+        detections = []
+        for result in results:
+            box = [
+                result['box']['xmin'],
+                result['box']['ymin'],
+                result['box']['xmax'],
+                result['box']['ymax']
+            ]
+            detections.append(DetectionResult(
+                score=result['score'],
+                label=result['label'],
+                box=box
+            ))
+        
+        return detections
+
+    def _segment(self, image: Image.Image, detections: List[DetectionResult], polygon_refinement: bool = False) -> List[DetectionResult]:
+        """Use SAM to generate masks"""
+        if not detections:
+            return detections
+        
+        boxes = [[det.box] for det in detections]
+        inputs = self.processor(images=image, input_boxes=boxes, return_tensors="pt").to(self.device)
+        outputs = self.segmentator(**inputs)
+        masks = self.processor.post_process_masks(
+            masks=outputs.pred_masks,
+            original_sizes=inputs.original_sizes,
+            reshaped_input_sizes=inputs.reshaped_input_sizes
+        )[0]
+        
+        masks = self._refine_masks(masks, polygon_refinement)
+        
+        for detection, mask in zip(detections, masks):
+            detection.mask = mask
+        
+        return detections
+
+    def _auto_segment(self, rgb: np.ndarray, labels: List[str], threshold: float = 0.3) -> Optional[np.ndarray]:
+        """Perform automatic segmentation using Grounding DINO + SAM"""
+        # Convert numpy array to PIL Image
+        image = Image.fromarray(rgb.astype(np.uint8))
+        
+        # Detect objects
+        detections = self._detect(image, labels, threshold)
+        
+        if not detections:
+            logging.warning("No objects detected")
+            return None
+        
+        # Segment using SAM
+        detections = self._segment(image, detections, polygon_refinement=True)
+        
+        # Return the mask of the first detection (highest confidence)
+        if detections:
+            return detections[0].mask
+        
+        return None
+
+    def register(self, K, rgb, depth, ob_mask=None, iteration=5):
         pose = self.estimator.register(K=K, rgb=rgb, depth=depth, ob_mask=ob_mask, iteration=iteration)
         self.is_initialized = True
         return pose
@@ -57,38 +177,29 @@ class ZerithFoundationPoseServer:
             raise RuntimeError("Not initialized. Call register first.")
         return self.estimator.track_one(rgb=rgb, depth=depth, K=K, iteration=iteration)
     
-    def start(self, port=5555):
-        """Start ZMQ server with register and track interfaces"""
-        context = zmq.Context()
-        socket = context.socket(zmq.REP)
-        socket.bind(f"tcp://*:{port}")
-        logging.info(f"ZMQ server started on port {port}")
-        
-        try:
-            while True:
-                message = socket.recv()
-                response = self._process_request(message)
-                socket.send(pickle.dumps(response))
-        except KeyboardInterrupt:
-            logging.info("Server shutting down")
-        finally:
-            socket.close()
-            context.term()
-    
     def _handle_register(self, request):
-        """Handle register command"""
+        """Handle register command with automatic segmentation"""
         try:
             K = request['K']
             rgb = request['rgb']
             depth = request['depth']
-            ob_mask = request.get('ob_mask', None)
+            labels = request.get('labels', ["object."])  # Default label
+            threshold = request.get('threshold', 0.3)
             iteration = request.get('iteration', 5)
             
-            logging.info("Received register command")
+            logging.info("Received register command with automatic segmentation")
+            
+            # Perform automatic segmentation using Grounding DINO + SAM
+            ob_mask = self._auto_segment(rgb, labels, threshold)
             
             if ob_mask is None:
+                # Fallback: use depth-based mask
+                logging.warning("Automatic segmentation failed, using depth-based mask")
                 ob_mask = (depth > 0).astype(bool)
+            else:
+                ob_mask = (ob_mask > 0).astype(bool)
             
+            # Execute register
             pose = self.register(K, rgb, depth, ob_mask, iteration)
             
             return {
@@ -165,10 +276,32 @@ class ZerithFoundationPoseServer:
                 'message': str(e)
             }
     
+    def start(self, port=5555):
+        """Start ZMQ server with register and track interfaces"""
+        context = zmq.Context()
+        socket = context.socket(zmq.REP)
+        socket.bind(f"tcp://*:{port}")
+        logging.info(f"ZMQ server started on port {port}")
+        
+        try:
+            while True:
+                message = socket.recv()
+                response = self._process_request(message)
+                socket.send(pickle.dumps(response))
+        
+        except KeyboardInterrupt:
+            logging.info("Server shutting down")
+        finally:
+            socket.close()
+            context.term()
 
 
 def main(args): 
-    server = ZerithFoundationPoseServer(mesh_file=args.mesh_file)
+    server = ZerithFoundationPoseServer(
+        mesh_file=args.mesh_file,
+        detector_id=args.detector_id,
+        segmenter_id=args.segmenter_id
+    )
     server.start(port=args.zmq_port)
 
 
