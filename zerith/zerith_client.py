@@ -128,7 +128,7 @@ def main(args):
                 print(f"Registration successful")
             else:
                 # Subsequent frames: track
-                print(f"Tracking frame {i}...")
+                start_time = time.time()
                 response = client.track(
                     K=reader.K,
                     rgb=color,
@@ -141,7 +141,8 @@ def main(args):
                     break
                 
                 pose = response['pose']
-                print(f"Tracking successful")
+                end_time = time.time()
+                print(f"Tracking frame {i} successful, time: {end_time - start_time}s")
             
             # Save pose
             np.savetxt(f'{args.debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4, 4))
