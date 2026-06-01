@@ -95,8 +95,9 @@ COLOR_MAP=np.array([[0, 0, 0], #Ignore
 
 def set_logging_format(level=logging.INFO):
   importlib.reload(logging)
-  FORMAT = '[%(funcName)s()] %(message)s'
-  logging.basicConfig(level=level, format=FORMAT)
+  FORMAT = '%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(funcName)s() - %(message)s'
+  DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+  logging.basicConfig(level=level, format=FORMAT, datefmt=DATE_FORMAT)
 
 set_logging_format()
 
