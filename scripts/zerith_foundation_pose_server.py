@@ -302,6 +302,45 @@ class ZerithFoundationPoseServer:
             os.makedirs(f'{args.debug_dir}/track_vis', exist_ok=True)
             imageio.imwrite(f'{args.debug_dir}/track_vis/{reader.id_strs[i]}.png', vis)
 
+    def get_and_visualize_object_pose(self):
+        K_color = np.array([
+            [607.62, 0.00,  329.68],
+            [0.00,  608.40, 243.36],
+            [0.00,  0.00, 1.00]
+        ])
+        rgb_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_rgb.png"
+        depth_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_depth.npy"
+        for i in range(1000):
+            logging.info(f'i: {i}')
+            rgb = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
+            depth = np.load(depth_path) / 1000.0
+            if i == 0:
+                # Perform automatic segmentation using Grounding DINO + SAM
+                labels = ['a black part']
+                threshold = 0.3
+                ob_mask = self._auto_segment(rgb, labels, threshold)
+                
+                if ob_mask is None:
+                    logging.warning("Automatic segmentation failed, using depth-based mask")
+                    ob_mask = (depth > 0).astype(bool)
+                else:
+                    ob_mask = (ob_mask > 0).astype(bool)
+                pose = self.register(K=K_color, rgb=rgb, depth=depth, ob_mask=ob_mask)
+            else:
+                pose = self.track(K=K_color, rgb=rgb, depth=depth)
+        
+            os.makedirs(f'{args.debug_dir}/ob_in_cam', exist_ok=True)
+            np.savetxt(f'{args.debug_dir}/ob_in_cam/{i}.txt', pose.reshape(4,4))
+
+            center_pose = pose@np.linalg.inv(self.to_origin)
+            vis = draw_posed_3d_box(K_color, img=rgb, ob_in_cam=center_pose, bbox=self.bbox)
+            vis = draw_xyz_axis(rgb, ob_in_cam=center_pose, scale=0.1, K=K_color, thickness=3, transparency=0, is_input_rgb=True)
+            cv2.imshow('1', vis[...,::-1])
+            cv2.waitKey(1)
+
+            os.makedirs(f'{args.debug_dir}/track_vis', exist_ok=True)
+            imageio.imwrite(f'{args.debug_dir}/track_vis/{i}.png', vis)
+
     def start(self, port=5555):
         """Start ZMQ server with register and track interfaces"""
         context = zmq.Context()
@@ -321,6 +360,18 @@ class ZerithFoundationPoseServer:
             socket.close()
             context.term()
 
+    def check_depth(self):
+        rgb_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_rgb.png"
+        depth_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_depth.npy"
+        rgb = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
+        depth = np.load(depth_path) / 1000.0
+        labels = ['a black part']
+        threshold = 0.3
+        ob_mask = self._auto_segment(rgb, labels, threshold)
+        ob_mask = (ob_mask > 0).astype(bool)
+        print(f"ob_mask", ob_mask)
+        valid = (depth>=0.001) & (ob_mask>0)
+        print(f"valid", valid.sum())
 
 def main(args): 
     server = ZerithFoundationPoseServer(
@@ -328,7 +379,8 @@ def main(args):
         detector_id=args.detector_id,
         segmenter_id=args.segmenter_id
     )
-    server.start(port=args.zmq_port)
+    # server.start(port=args.zmq_port)
+    server.get_and_visualize_object_pose()
 
 
 if __name__ == '__main__':
