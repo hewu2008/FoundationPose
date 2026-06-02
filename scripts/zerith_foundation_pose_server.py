@@ -313,7 +313,7 @@ class ZerithFoundationPoseServer:
         for i in range(1000):
             logging.info(f'i: {i}')
             rgb = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
-            depth = np.load(depth_path) / 1000.0
+            depth = np.load(depth_path)
             if i == 0:
                 # Perform automatic segmentation using Grounding DINO + SAM
                 labels = ['a black part']
@@ -372,6 +372,7 @@ class ZerithFoundationPoseServer:
         print(f"ob_mask", ob_mask)
         valid = (depth>=0.001) & (ob_mask>0)
         print(f"valid", valid.sum())
+
 
 def main(args): 
     server = ZerithFoundationPoseServer(
