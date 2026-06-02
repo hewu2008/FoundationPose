@@ -45,6 +45,14 @@ def main():
     
     convert_stp_to_obj(args.input, args.output, args.tolerance, args.unit)
 
+def move_to_center():
+    mesh = trimesh.load('/home/jszn/hewu/alg-product/FoundationPose/assets/DPUB-551004004-AAX_04.obj')
+
+    bbox_center = mesh.bounds.mean(axis=0)
+    mesh.vertices -= bbox_center
+
+    mesh.export('/home/jszn/hewu/alg-product/FoundationPose/assets/DPUB-551004004-AAX_04_new.obj', file_type='obj')
+
 
 if __name__ == '__main__':
     main()

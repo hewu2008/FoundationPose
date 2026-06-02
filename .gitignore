@@ -164,3 +164,4 @@ scripts/*.png
 assets/
 debug_mard0/
 client_debug/
+debug_limiter/
