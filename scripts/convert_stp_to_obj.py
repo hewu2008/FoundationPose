@@ -4,7 +4,7 @@ from cadquery.occ_impl.importers import importStep
 import trimesh
 
 
-def convert_stp_to_obj(stp_path, obj_path, tolerance=0.1, unit='meter'):
+def convert_stp_to_obj(stp_path, obj_path, tolerance=1.0, unit='meter'):
     """
     Convert STP/STEP file to OBJ format
     :param stp_path: Path to input .stp or .step file
