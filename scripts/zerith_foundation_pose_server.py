@@ -312,12 +312,13 @@ class ZerithFoundationPoseServer:
         depth_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_depth.npy"
         for i in range(1000):
             logging.info(f'i: {i}')
-            rgb = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
+            bgr = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             depth = np.load(depth_path)
             if i == 0:
                 # Perform automatic segmentation using Grounding DINO + SAM
-                labels = ['a black part']
-                threshold = 0.3
+                labels = ['white brake fluid reservoir']
+                threshold = 0.4
                 ob_mask = self._auto_segment(rgb, labels, threshold)
                 
                 if ob_mask is None:
@@ -325,7 +326,7 @@ class ZerithFoundationPoseServer:
                     ob_mask = (depth > 0).astype(bool)
                 else:
                     ob_mask = (ob_mask > 0).astype(bool)
-                pose = self.register(K=K_color, rgb=rgb, depth=depth, ob_mask=ob_mask)
+                pose = self.register(K=K_color, rgb=rgb, depth=depth, ob_mask=ob_mask, iteration=10)
             else:
                 pose = self.track(K=K_color, rgb=rgb, depth=depth)
         
