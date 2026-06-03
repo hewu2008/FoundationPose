@@ -1,7 +1,7 @@
 #!/bin/bash
 
 python scripts/convert_stp_to_obj.py \
-    --input "assets/DPUB-551004004-AAX_04.stp" \
-    --output "assets/DPUB-551004004-AAX_04.obj" \
+    --input "assets/DPPUB-204001196-AAX_01_01.stp" \
+    --output "assets/DPPUB-204001196-AAX_01_01.obj" \
     --unit "meter" \
     --tolerance 1.0

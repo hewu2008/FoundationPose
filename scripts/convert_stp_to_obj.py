@@ -33,6 +33,12 @@ def convert_stp_to_obj(stp_path, obj_path, tolerance=1.0, unit='meter'):
     mesh.export(obj_path, file_type='obj')
     print(f"Conversion successful! File saved to: {obj_path} (unit: {unit})")
 
+def move_to_center(obj_path):
+    mesh = trimesh.load(obj_path)
+    bbox_center = mesh.bounds.mean(axis=0)
+    mesh.vertices -= bbox_center
+    mesh.export(obj_path, file_type='obj')
+
 def main():
     parser = argparse.ArgumentParser(description='Convert STP/STEP CAD files to OBJ mesh format')
     parser.add_argument('--input', type=str, required=True, help='Input STP/STEP file path')
@@ -44,14 +50,9 @@ def main():
     args = parser.parse_args()
     
     convert_stp_to_obj(args.input, args.output, args.tolerance, args.unit)
+    move_to_center(args.output)
 
-def move_to_center():
-    mesh = trimesh.load('/home/jszn/hewu/alg-product/FoundationPose/assets/DPUB-551004004-AAX_04.obj')
 
-    bbox_center = mesh.bounds.mean(axis=0)
-    mesh.vertices -= bbox_center
-
-    mesh.export('/home/jszn/hewu/alg-product/FoundationPose/assets/DPUB-551004004-AAX_04_new.obj', file_type='obj')
 
 
 if __name__ == '__main__':
