@@ -229,6 +229,7 @@ def bottle_client(args):
                     break
                 
                 pose = response['pose']
+                pose = pose.numpy()
                 print(f"Registration successful")
             else:
                 # Subsequent frames: track
@@ -245,6 +246,7 @@ def bottle_client(args):
                     break
                 
                 pose = response['pose']
+                pose = pose.numpy()
                 end_time = time.time()
                 print(f"Tracking frame {i} successful, time: {end_time - start_time}s")
             

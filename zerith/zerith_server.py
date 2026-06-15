@@ -3,6 +3,7 @@ import zmq
 import pickle
 import logging
 from typing import Dict, Any
+import torch
 
 
 class ZerithServer:
@@ -34,6 +35,7 @@ class ZerithServer:
                 ob_mask = (ob_mask > 0).astype(bool)
 
             pose = self.pose_estimator.register(K, rgb, depth, ob_mask, iteration)
+            pose = torch.from_numpy(pose) if isinstance(pose, type(None)) == False else pose
 
             return {
                 'status': 'success',
@@ -57,6 +59,7 @@ class ZerithServer:
             logging.info("Received track command")
 
             pose = self.pose_estimator.track(K, rgb, depth, iteration)
+            pose = torch.from_numpy(pose) if isinstance(pose, type(None)) == False else pose
 
             return {
                 'status': 'success',
