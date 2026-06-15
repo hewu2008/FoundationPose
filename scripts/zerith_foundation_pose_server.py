@@ -56,7 +56,7 @@ class ZerithFoundationPoseServer:
             scorer=self.scorer, 
             refiner=self.refiner, 
             debug_dir=args.debug_dir, 
-            debug=0, 
+            debug=3, 
             glctx=self.glctx
         )
         logging.info(f"Load estimator successfully")
@@ -317,8 +317,8 @@ class ZerithFoundationPoseServer:
             depth = np.load(depth_path)
             if i == 0:
                 # Perform automatic segmentation using Grounding DINO + SAM
-                labels = ['white brake fluid reservoir']
-                threshold = 0.4
+                labels = ['translucent white brake fluid reservoir']
+                threshold = 0.34
                 ob_mask = self._auto_segment(rgb, labels, threshold)
                 
                 if ob_mask is None:
@@ -341,6 +341,7 @@ class ZerithFoundationPoseServer:
 
             os.makedirs(f'{args.debug_dir}/track_vis', exist_ok=True)
             imageio.imwrite(f'{args.debug_dir}/track_vis/{i}.png', vis)
+            return
 
     def start(self, port=5555):
         """Start ZMQ server with register and track interfaces"""

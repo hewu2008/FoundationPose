@@ -2,6 +2,8 @@
 
 export PYTHONPATH=/home/jszn/hewu/alg-product/FoundationPose
 
+rm -rf debug_limiter
+
 python scripts/zerith_foundation_pose_server.py \
     --detector_id "/home/jszn/hewu/model_zoo/grounding-dino-tiny" \
     --segmenter_id "/home/jszn/hewu/model_zoo/sam-vit-base" \
