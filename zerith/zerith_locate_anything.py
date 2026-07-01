@@ -20,8 +20,8 @@ class LocateAnythingWorker:
 
     optimized_categories_index = {0, 1}
     optimized_categories_area_threshold = {
-        0: (0.03, 0.1),
-        1: (0.03, 0.1),
+        0: (0.015, 0.1),
+        1: (0.015, 0.1),
     }
 
     def __init__(self, model_path: str, device: str = "cuda", dtype=torch.bfloat16):
