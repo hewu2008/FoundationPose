@@ -2,4 +2,5 @@
 
 python zerith/zerith_locate_anything.py \
     --model_path "/home/jszn/hewu/model_zoo/LocateAnything-3B" \
-    --image "/home/jszn/hewu/dataset/locate_anything/28.png"
+    --input_dir "/home/jszn/hewu/dataset/locate_anything" \
+    --output_dir "runtime/locate_anything"

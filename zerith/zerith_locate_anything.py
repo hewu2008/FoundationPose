@@ -1,7 +1,9 @@
 # encoding:utf8 
 import re
+import os
 import torch
 import argparse
+from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from transformers import AutoModel, AutoTokenizer, AutoProcessor
 
@@ -150,27 +152,40 @@ class LocateAnythingWorker:
 def main():
     parser = argparse.ArgumentParser(description='LocateAnything Worker')
     parser.add_argument('--model_path', type=str, default='nvidia/LocateAnything-3B', help='Path to the LocateAnything model')
-    parser.add_argument('--image', type=str, default='example.jpg', help='Path to the input image')
+    parser.add_argument('--input_dir', type=str, required=True, help='Directory containing input images')
+    parser.add_argument('--output_dir', type=str, default='./output', help='Directory to save output images')
     args = parser.parse_args()
 
+    input_dir = Path(args.input_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
+
     worker = LocateAnythingWorker(args.model_path)
-    img = Image.open(args.image).convert("RGB")
 
-    # Object Detection
-    result = worker.detect(img, ["white plastic tank", "black door checker"])
-    print("Detection:", result["answer"])
+    for img_path in input_dir.iterdir():
+        if img_path.is_file() and img_path.suffix.lower() in image_extensions:
+            print(f"Processing: {img_path.name}")
+            img = Image.open(img_path).convert("RGB")
 
-    # Parse structured output into pixel coordinates
-    w, h = img.size
-    boxes = LocateAnythingWorker.parse_boxes(result["answer"], w, h)
-    print("Boxes:", boxes)
+            result = worker.detect(img, ["white plastic tank with black cap ", "T-shaped part"])
+            print("Detection:", result["answer"])
 
-    # Draw boxes on the image
-    draw = ImageDraw.Draw(img)
-    for box in boxes:
-        draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="red", width=2)
-        draw.text((box["x1"], box["y1"]), box["label"], fill="blue")
-    img.save("boxes.jpg")
+            w, h = img.size
+            boxes = LocateAnythingWorker.parse_boxes(result["answer"], w, h)
+            print("Boxes:", boxes)
+
+            draw = ImageDraw.Draw(img)
+            for box in boxes:
+                draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="red", width=2)
+                draw.text((box["x1"], box["y1"]), box["label"], fill="blue")
+
+            output_path = output_dir / f"{img_path.stem}_boxes{img_path.suffix}"
+            img.save(output_path)
+            print(f"Saved: {output_path.name}")
+        else:
+            print(f"Skipping: {img_path.name}")
 
 
 if __name__ == "__main__":
