@@ -2,7 +2,7 @@
 import re
 import torch
 import argparse
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from transformers import AutoModel, AutoTokenizer, AutoProcessor
 
 
@@ -169,7 +169,7 @@ def main():
     draw = ImageDraw.Draw(img)
     for box in boxes:
         draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="red", width=2)
-        draw.text((box["x1"], box["y1"]), box["label"], fill="red")
+        draw.text((box["x1"], box["y1"]), box["label"], fill="blue")
     img.save("boxes.jpg")
 
 
