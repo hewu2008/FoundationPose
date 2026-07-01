@@ -4,8 +4,8 @@ import numpy as np
 import cv2
 from PIL import Image
 from typing import List, Optional
+from transformers import AutoModelForMaskGeneration, AutoProcessor
 from zerith_locate_anything import LocateAnythingWorker
-
 
 class DetectionResult:
     def __init__(self, score: float, label: str, box: List[int], mask: Optional[np.array] = None):
@@ -23,10 +23,7 @@ class ZerithSegmentation:
         self._init_models()
 
     def _init_models(self):
-        from transformers import AutoModelForMaskGeneration, AutoProcessor
-
-        self.object_detector = LocateAnythingWorker(self.detector_id, device=self.device)
-
+        self.object_detector = LocateAnythingWorker(self.detector_id)
         self.segmentator = AutoModelForMaskGeneration.from_pretrained(self.segmenter_id).to(self.device)
         self.processor = AutoProcessor.from_pretrained(self.segmenter_id)
 
