@@ -18,7 +18,7 @@ class LocateAnythingWorker:
         "black robotic arm or gripper"
     ]
 
-    optimized_categories_index = {0, 1}
+    optimized_categories_index = {0}
     optimized_categories_area_threshold = {
         0: (0.015, 0.1),
         1: (0.015, 0.1),
