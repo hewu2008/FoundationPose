@@ -162,9 +162,6 @@ def main():
 
     image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
 
-    min_area_ratio = 0.001
-    max_area_ratio = 0.5
-
     worker = LocateAnythingWorker(args.model_path)
 
     optimized_categories = [
@@ -187,16 +184,20 @@ def main():
             print("Boxes:", boxes)
 
             draw = ImageDraw.Draw(img)
+            image_area = w * h
             for box in boxes:
                 if box["label"] not in optimized_categories:
                     continue
+                box_area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
+                box_area_ratio = box_area / image_area
+
                 label_index = optimized_categories.index(box["label"])
-                if label_index == 0:
+                if label_index == 0 and 0.03 <= box_area_ratio <= 0.1:
                     draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="blue", width=2)
-                    draw.text((box["x1"], box["y1"]), box["label"], fill="blue")
-                if label_index == 1:
+                    draw.text((box["x1"], box["y1"]), f"{box['label']}\n({box_area_ratio:.1%})", fill="blue")
+                if label_index == 1 and 0.03 <= box_area_ratio <= 0.1:
                     draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="red", width=2)
-                    draw.text((box["x1"], box["y1"]), box["label"], fill="red")
+                    draw.text((box["x1"], box["y1"]), f"{box['label']}\n({box_area_ratio:.1%})", fill="red")
             output_path = output_dir / f"{img_path.stem}_boxes{img_path.suffix}"
             img.save(output_path)
             print(f"Saved: {output_path.name}")
