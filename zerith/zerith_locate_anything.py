@@ -162,14 +162,24 @@ def main():
 
     image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
 
+    min_area_ratio = 0.001
+    max_area_ratio = 0.5
+
     worker = LocateAnythingWorker(args.model_path)
+
+    optimized_categories = [
+        "white translucent plastic brake fluid reservoir with a blue or black cap",
+        "a T-shaped black metal car door checker with a wide top head and a narrow bottom stem", 
+        "large black rectangular box or foam block base",
+        "black robotic arm or gripper"
+    ]
 
     for img_path in input_dir.iterdir():
         if img_path.is_file() and img_path.suffix.lower() in image_extensions:
             print(f"Processing: {img_path.name}")
             img = Image.open(img_path).convert("RGB")
 
-            result = worker.detect(img, ["white plastic tank with black cap ", "T-shaped part"])
+            result = worker.detect(img, optimized_categories)
             print("Detection:", result["answer"])
 
             w, h = img.size
@@ -178,9 +188,15 @@ def main():
 
             draw = ImageDraw.Draw(img)
             for box in boxes:
-                draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="red", width=2)
-                draw.text((box["x1"], box["y1"]), box["label"], fill="blue")
-
+                if box["label"] not in optimized_categories:
+                    continue
+                label_index = optimized_categories.index(box["label"])
+                if label_index == 0:
+                    draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="blue", width=2)
+                    draw.text((box["x1"], box["y1"]), box["label"], fill="blue")
+                if label_index == 1:
+                    draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="red", width=2)
+                    draw.text((box["x1"], box["y1"]), box["label"], fill="red")
             output_path = output_dir / f"{img_path.stem}_boxes{img_path.suffix}"
             img.save(output_path)
             print(f"Saved: {output_path.name}")
