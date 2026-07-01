@@ -17,6 +17,7 @@ class ZerithServer:
         self.save_dir = save_dir
         os.makedirs(os.path.join(save_dir, 'rgb'), exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'mask_overlay'), exist_ok=True)
+        os.makedirs(os.path.join(save_dir, 'ob_in_cam'), exist_ok=True)
 
     def _save_debug_images(self, index, rgb, ob_mask):
         try:
@@ -60,6 +61,7 @@ class ZerithServer:
             self._save_debug_images(index, rgb, ob_mask)
 
             pose = self.pose_estimator.register(K, rgb, depth, ob_mask, iteration)
+            np.savetxt(f'{self.save_dir}/ob_in_cam/{index}.txt', pose.reshape(4, 4))
             pose = torch.from_numpy(pose) if isinstance(pose, type(None)) == False else pose
 
             return {
