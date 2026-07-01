@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 from PIL import Image
 from typing import List, Optional
+from zerith_locate_anything import LocateAnythingWorker
 
 
 class DetectionResult:
@@ -17,18 +18,14 @@ class DetectionResult:
 class ZerithSegmentation:
     def __init__(self, detector_id=None, segmenter_id=None, device=None):
         self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
-        self.detector_id = detector_id if detector_id else "IDEA-Research/grounding-dino-tiny"
+        self.detector_id = detector_id if detector_id else "nvidia/LocateAnything-3B"
         self.segmenter_id = segmenter_id if segmenter_id else "facebook/sam-vit-base"
         self._init_models()
 
     def _init_models(self):
-        from transformers import AutoModelForMaskGeneration, AutoProcessor, pipeline
+        from transformers import AutoModelForMaskGeneration, AutoProcessor
 
-        self.object_detector = pipeline(
-            model=self.detector_id,
-            task="zero-shot-object-detection",
-            device=self.device
-        )
+        self.object_detector = LocateAnythingWorker(self.detector_id, device=self.device)
 
         self.segmentator = AutoModelForMaskGeneration.from_pretrained(self.segmenter_id).to(self.device)
         self.processor = AutoProcessor.from_pretrained(self.segmenter_id)
@@ -55,21 +52,39 @@ class ZerithSegmentation:
         return masks
 
     def _detect(self, image: Image.Image, labels: List[str], threshold: float = 0.3) -> List[DetectionResult]:
-        labels = [label if label.endswith(".") else label + "." for label in labels]
-        results = self.object_detector(image, candidate_labels=labels, threshold=threshold)
+        result = self.object_detector.detect(image, LocateAnythingWorker.optimized_categories)
+        w, h = image.size
+        image_area = w * h
+        boxes = LocateAnythingWorker.parse_boxes(result["answer"], w, h)
 
         detections = []
-        for result in results:
-            box = [
-                result['box']['xmin'],
-                result['box']['ymin'],
-                result['box']['xmax'],
-                result['box']['ymax']
+        for box in boxes:
+            # Filter out boxes with invalid labels
+            if box["label"] not in LocateAnythingWorker.optimized_categories:
+                continue
+
+            # Filter out boxes with invalid categories
+            label_index = LocateAnythingWorker.optimized_categories.index(box["label"])
+            if label_index not in LocateAnythingWorker.optimized_categories_index:
+                continue
+            
+            # Filter out boxes with invalid area ratios
+            box_area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
+            box_area_ratio = box_area / image_area
+            min_area, max_area = LocateAnythingWorker.optimized_categories_area_threshold[label_index]
+            if not min_area <= box_area_ratio <= max_area:
+                continue
+
+            det_box = [
+                int(box['x1']),
+                int(box['y1']),
+                int(box['x2']),
+                int(box['y2'])
             ]
             detections.append(DetectionResult(
-                score=result['score'],
-                label=result['label'],
-                box=box
+                score=threshold,
+                label=box['label'],
+                box=det_box
             ))
 
         return detections

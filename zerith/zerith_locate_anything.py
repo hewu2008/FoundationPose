@@ -11,6 +11,19 @@ from transformers import AutoModel, AutoTokenizer, AutoProcessor
 class LocateAnythingWorker:
     """Stateful worker that loads the model once and serves perception queries."""
 
+    optimized_categories = [
+        "white translucent plastic brake fluid reservoir with a blue or black cap",
+        "a T-shaped black metal car door checker with a wide top head and a narrow bottom stem", 
+        "large black rectangular box or foam block base",
+        "black robotic arm or gripper"
+    ]
+
+    optimized_categories_index = {0, 1}
+    optimized_categories_area_threshold = {
+        0: (0.03, 0.1),
+        1: (0.03, 0.1),
+    }
+
     def __init__(self, model_path: str, device: str = "cuda", dtype=torch.bfloat16):
         self.device = device
         self.dtype = dtype
@@ -164,19 +177,12 @@ def main():
 
     worker = LocateAnythingWorker(args.model_path)
 
-    optimized_categories = [
-        "white translucent plastic brake fluid reservoir with a blue or black cap",
-        "a T-shaped black metal car door checker with a wide top head and a narrow bottom stem", 
-        "large black rectangular box or foam block base",
-        "black robotic arm or gripper"
-    ]
-
     for img_path in input_dir.iterdir():
         if img_path.is_file() and img_path.suffix.lower() in image_extensions:
             print(f"Processing: {img_path.name}")
             img = Image.open(img_path).convert("RGB")
 
-            result = worker.detect(img, optimized_categories)
+            result = worker.detect(img, LocateAnythingWorker.optimized_categories)
             print("Detection:", result["answer"])
 
             w, h = img.size
@@ -186,16 +192,26 @@ def main():
             draw = ImageDraw.Draw(img)
             image_area = w * h
             for box in boxes:
-                if box["label"] not in optimized_categories:
+                # Filter out boxes with invalid labels
+                if box["label"] not in LocateAnythingWorker.optimized_categories:
                     continue
+                
+                # Filter out boxes with invalid categories
+                label_index = LocateAnythingWorker.optimized_categories.index(box["label"])
+                if label_index not in LocateAnythingWorker.optimized_categories_index:
+                    continue
+                    
+                # Filter out boxes with invalid area ratios
                 box_area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
                 box_area_ratio = box_area / image_area
+                min_area, max_area = LocateAnythingWorker.optimized_categories_area_threshold[label_index]
+                if not min_area <= box_area_ratio <= max_area:
+                    continue
 
-                label_index = optimized_categories.index(box["label"])
-                if label_index == 0 and 0.03 <= box_area_ratio <= 0.1:
+                if label_index == 0:
                     draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="blue", width=2)
                     draw.text((box["x1"], box["y1"]), f"{box['label']}\n({box_area_ratio:.1%})", fill="blue")
-                if label_index == 1 and 0.03 <= box_area_ratio <= 0.1:
+                if label_index == 1:
                     draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="red", width=2)
                     draw.text((box["x1"], box["y1"]), f"{box['label']}\n({box_area_ratio:.1%})", fill="red")
             output_path = output_dir / f"{img_path.stem}_boxes{img_path.suffix}"
