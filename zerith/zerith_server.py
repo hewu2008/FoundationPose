@@ -52,7 +52,6 @@ class ZerithServer:
                 ob_mask = (depth > 0).astype(bool)
             else:
                 if isinstance(ob_mask, bytes):
-                    import numpy as np
                     ob_mask = np.frombuffer(ob_mask, dtype=np.uint8).reshape(rgb.shape[:2])
                 ob_mask = (ob_mask > 0).astype(bool)
 
