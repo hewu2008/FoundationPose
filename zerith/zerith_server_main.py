@@ -84,7 +84,7 @@ def execute_full_pipeline(server, test_scene_dir, debug_dir, to_origin):
 def main(args):
     pose_estimator = create_pose_estimator(args.mesh_file, args.debug_dir)
     segmentation = create_segmentation(detector_id=args.detector_id, segmenter_id=args.segmenter_id)
-    server = ZerithServer(pose_estimator=pose_estimator, segmentation=segmentation)
+    server = ZerithServer(pose_estimator=pose_estimator, segmentation=segmentation, save_dir=args.debug_dir)
     server.start(port=args.zmq_port)
 
 

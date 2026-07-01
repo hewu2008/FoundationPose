@@ -4,13 +4,33 @@ import pickle
 import logging
 from typing import Dict, Any
 import torch
+import cv2
+import os
 
 
 class ZerithServer:
-    def __init__(self, pose_estimator, segmentation):
+    def __init__(self, pose_estimator, segmentation, save_dir='./debug_register'):
         self.pose_estimator = pose_estimator
         self.segmentation = segmentation
         self.is_initialized = False
+        self._call_index = 0
+        self.save_dir = save_dir
+        os.makedirs(os.path.join(save_dir, 'rgb'), exist_ok=True)
+        os.makedirs(os.path.join(save_dir, 'mask_overlay'), exist_ok=True)
+
+    def _save_debug_images(self, index, rgb, ob_mask):
+        try:
+            rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(self.save_dir, 'rgb', f'{index}.png'), rgb_bgr)
+
+            mask_vis = rgb.copy()
+            mask_vis[ob_mask] = [0, 255, 0]
+            mask_vis_bgr = cv2.cvtColor(mask_vis, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(self.save_dir, 'mask_overlay', f'{index}.png'), mask_vis_bgr)
+
+            logging.info(f"Debug images saved for index {index}")
+        except Exception as save_e:
+            logging.warning(f"Failed to save debug images: {str(save_e)}")
 
     def _handle_register(self, request):
         try:
@@ -33,6 +53,11 @@ class ZerithServer:
                     import numpy as np
                     ob_mask = np.frombuffer(ob_mask, dtype=np.uint8).reshape(rgb.shape[:2])
                 ob_mask = (ob_mask > 0).astype(bool)
+
+            index = self._call_index
+            self._call_index += 1
+
+            self._save_debug_images(index, rgb, ob_mask)
 
             pose = self.pose_estimator.register(K, rgb, depth, ob_mask, iteration)
             pose = torch.from_numpy(pose) if isinstance(pose, type(None)) == False else pose
