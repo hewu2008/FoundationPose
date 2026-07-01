@@ -6,6 +6,7 @@ from typing import Dict, Any
 import torch
 import cv2
 import os
+import numpy as np
 
 
 class ZerithServer:
