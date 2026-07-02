@@ -6,6 +6,7 @@ from typing import Dict, Any
 import torch
 import cv2
 import os
+from PIL import Image
 import numpy as np
 
 
@@ -30,6 +31,7 @@ class ZerithServer:
     def _handle_detection(self, request):
         try:
             rgb = request['rgb']
+            rgb = Image.fromarray(rgb.astype(np.uint8))
             boxes = self.segmentation.object_detector.detect_part(rgb)
             logging.info(f"Detection completed, found {len(boxes)} boxes")
 

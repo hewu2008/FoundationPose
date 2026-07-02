@@ -40,6 +40,17 @@ class ZerithFoundationPoseClient:
             print(f"Error sending request: {str(e)}")
             return {'status': 'error', 'message': str(e)}
     
+    def ping(self):
+        """Check if server is alive"""
+        return self.send_request('ping')
+    
+    def detection(self, rgb):
+        """Call detection interface for part detection"""
+        params = {
+            'rgb': rgb
+        }
+        return self.send_request('detection', **params)
+
     def register(self, K, rgb, depth, labels=None, threshold=0.3, iteration=5):
         """Call register interface"""
         params = {
@@ -61,10 +72,6 @@ class ZerithFoundationPoseClient:
             'iteration': iteration
         }
         return self.send_request('track', **params)
-    
-    def ping(self):
-        """Check if server is alive"""
-        return self.send_request('ping')
     
     def close(self):
         """Close connection"""
@@ -199,7 +206,15 @@ def bottle_client(args):
     rgb_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_rgb.png"
     depth_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_depth.npy"
     
-    try:
+    try:  
+        color = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
+        color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
+        response = client.detection(color)
+        if response['status'] != 'success':
+            print(f"Detection failed: {response.get('message', 'Unknown error')}")
+            return
+        print(f"Detection successful, {response}")
+
         for i in range(10):
             # Get frame data
             color = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
