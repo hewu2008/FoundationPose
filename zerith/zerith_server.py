@@ -19,31 +19,37 @@ class ZerithServer:
         os.makedirs(os.path.join(save_dir, 'rgb'), exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'mask_overlay'), exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'ob_in_cam'), exist_ok=True)
-
-    def _save_debug_images(self, index, rgb, ob_mask):
-        try:
-            rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(os.path.join(self.save_dir, 'rgb', f'{index}.png'), rgb_bgr)
-
-            mask_vis = rgb.copy()
-            mask_vis[ob_mask] = [0, 255, 0]
-            mask_vis_bgr = cv2.cvtColor(mask_vis, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(os.path.join(self.save_dir, 'mask_overlay', f'{index}.png'), mask_vis_bgr)
-
-            logging.info(f"Debug images saved for index {index}")
-        except Exception as save_e:
-            logging.warning(f"Failed to save debug images: {str(save_e)}")
+    
+    def _handle_ping(self, request):
+        logging.debug("Received ping command")
+        return {
+            'status': 'success',
+            'message': 'Server is running'
+        }
 
     def _handle_detection(self, request):
         try:
             rgb = request['rgb']
+            boxes = self.segmentation.object_detector.detect_part(rgb)
+            logging.info(f"Detection completed, found {len(boxes)} boxes")
+
+            if boxes is None or len(boxes) == 0:
+                return {
+                    'status': 'error',
+                    'message': 'No boxes detected'
+                }
+            else:
+                return {
+                    'status': 'success',
+                    'boxes': boxes,
+                    'message': f'Detection successful, found {len(boxes)} boxes'
+                }
         except Exception as e:
             logging.error(f"Error in detection: {str(e)}")
             return {
                 'status': 'error',
                 'message': f'Detection failed: {str(e)}'
             }
-
 
     def _handle_register(self, request):
         try:
@@ -111,13 +117,6 @@ class ZerithServer:
                 'message': f'Tracking failed: {str(e)}'
             }
 
-    def _handle_ping(self, request):
-        logging.debug("Received ping command")
-        return {
-            'status': 'success',
-            'message': 'Server is running'
-        }
-
     def _handle_unknown(self, command):
         logging.warning(f"Unknown command: {command}")
         return {
@@ -125,15 +124,30 @@ class ZerithServer:
             'message': f'Unknown command: {command}'
         }
 
+    def _save_debug_images(self, index, rgb, ob_mask):
+        try:
+            rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(self.save_dir, 'rgb', f'{index}.png'), rgb_bgr)
+
+            mask_vis = rgb.copy()
+            mask_vis[ob_mask] = [0, 255, 0]
+            mask_vis_bgr = cv2.cvtColor(mask_vis, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(os.path.join(self.save_dir, 'mask_overlay', f'{index}.png'), mask_vis_bgr)
+
+            logging.info(f"Debug images saved for index {index}")
+        except Exception as save_e:
+            logging.warning(f"Failed to save debug images: {str(save_e)}")    
+    
     def _process_request(self, message):
         try:
             request = pickle.loads(message)
             command = request.get('command', '')
 
             handlers = {
+                'ping': self._handle_ping,
+                'detection': self._handle_detection,
                 'register': self._handle_register,
-                'track': self._handle_track,
-                'ping': self._handle_ping
+                'track': self._handle_track
             }
 
             handler = handlers.get(command, lambda req: self._handle_unknown(command))
