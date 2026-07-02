@@ -29,6 +29,24 @@ class ZerithPoseEstimator:
 
         self.is_initialized = False
 
+    def reset_object(self, mesh_file):
+        if mesh_file != self.mesh_file:
+            logging.info(f"Reset object to {mesh_file}")
+
+            self.mesh_file = mesh_file
+            self.mesh = trimesh.load(self.mesh_file)
+            logging.info(f"Mesh loaded: {self.mesh_file}")
+
+            self.to_origin, self.extents = trimesh.bounds.oriented_bounds(self.mesh)
+            self.bbox = np.stack([-self.extents/2, self.extents/2], axis=0).reshape(2, 3)
+            logging.info(f"Mesh bbox: {self.bbox}")
+
+            self.estimator.reset_object(
+                model_pts=self.mesh.vertices,
+                model_normals=self.mesh.vertex_normals,
+                mesh=self.mesh
+            )
+
     def register(self, K, rgb, depth, ob_mask=None, iteration=5):
         pose = self.estimator.register(K=K, rgb=rgb, depth=depth, ob_mask=ob_mask, iteration=iteration)
         self.is_initialized = True

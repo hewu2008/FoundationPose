@@ -2,8 +2,12 @@
 
 export PYTHONPATH=/home/jszn/hewu/alg-product/FoundationPose
 
+DEBUG_DIR="runtime/debug_zerith_client"
+
+rm -rf "$DEBUG_DIR"
+
 python zerith/zerith_client.py \
     --mesh_file "assets/DPPUB-204001196-AAX_01_01.obj" \
     --video_dir "demo_data/mustard0" \
-    --debug_dir "runtime/debug_zerith_client" \
+    --debug_dir "$DEBUG_DIR" \
     --labels "small white plastic tank with black cap"

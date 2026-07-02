@@ -86,6 +86,12 @@ class ZerithServer:
             self._save_debug_images(index, rgb, ob_mask)
             logging.info(f"Debug images saved to {self.save_dir}")
 
+            # Reset object if label changes
+            label_to_config = {config["label"]: config for config in self.segmentation.object_detector._category_configs}
+            config = label_to_config[label]
+            mesh_file = config["mesh_file"]
+            self.pose_estimator.reset_object(mesh_file)
+
             pose = self.pose_estimator.register(K, rgb, depth, ob_mask, iteration)
             np.savetxt(f'{self.save_dir}/ob_in_cam/{index}.txt', pose.reshape(4, 4))
             pose = torch.from_numpy(pose) if isinstance(pose, type(None)) == False else pose
