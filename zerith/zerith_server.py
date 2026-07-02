@@ -58,17 +58,23 @@ class ZerithServer:
             K = request['K']
             rgb = request['rgb']
             depth = request['depth']
-            labels = request.get('labels', ["object."])
+            label = request.get('label', None)
+            box = request.get('box', None)
             threshold = request.get('threshold', 0.3)
             iteration = request.get('iteration', 5)
 
             logging.info("Received register command with automatic segmentation")
 
-            ob_mask = self.segmentation.segment(rgb, labels, threshold)
+            ob_mask = self.segmentation.segment(rgb, label, box, threshold)
+
+            logging.info(f"Segmentation completed")
 
             if ob_mask is None:
-                logging.warning("Automatic segmentation failed, using depth-based mask")
-                ob_mask = (depth > 0).astype(bool)
+                logging.error("Segmentation failed, no valid mask found")
+                return {
+                    'status': 'error',
+                    'message': 'Segmentation failed, no valid mask found'
+                }
             else:
                 if isinstance(ob_mask, bytes):
                     ob_mask = np.frombuffer(ob_mask, dtype=np.uint8).reshape(rgb.shape[:2])
@@ -78,6 +84,7 @@ class ZerithServer:
             self._call_index += 1
 
             self._save_debug_images(index, rgb, ob_mask)
+            logging.info(f"Debug images saved to {self.save_dir}")
 
             pose = self.pose_estimator.register(K, rgb, depth, ob_mask, iteration)
             np.savetxt(f'{self.save_dir}/ob_in_cam/{index}.txt', pose.reshape(4, 4))

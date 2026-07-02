@@ -2,6 +2,7 @@
 import torch
 import numpy as np
 import cv2
+import logging
 from PIL import Image
 from typing import List, Optional
 from transformers import AutoModelForMaskGeneration, AutoProcessor
@@ -49,29 +50,12 @@ class ZerithSegmentation:
         return masks
 
     def _detect(self, image: Image.Image, labels: List[str], threshold: float = 0.3) -> List[DetectionResult]:
-        result = self.object_detector.detect(image, LocateAnythingWorker.optimized_categories)
-        w, h = image.size
-        image_area = w * h
-        boxes = LocateAnythingWorker.parse_boxes(result["answer"], w, h)
-
+        filtered_boxes = self.object_detector.detect_part(image)
+        
         detections = []
-        for box in boxes:
-            # Filter out boxes with invalid labels
-            if box["label"] not in LocateAnythingWorker.optimized_categories:
+        for box in filtered_boxes:
+            if box['label'] not in labels:
                 continue
-
-            # Filter out boxes with invalid categories
-            label_index = LocateAnythingWorker.optimized_categories.index(box["label"])
-            if label_index not in LocateAnythingWorker.optimized_categories_index:
-                continue
-            
-            # Filter out boxes with invalid area ratios
-            box_area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
-            box_area_ratio = box_area / image_area
-            min_area, max_area = LocateAnythingWorker.optimized_categories_area_threshold[label_index]
-            if not min_area <= box_area_ratio <= max_area:
-                continue
-
             det_box = [
                 int(box['x1']),
                 int(box['y1']),
@@ -108,15 +92,24 @@ class ZerithSegmentation:
 
         return detections
 
-    def segment(self, rgb: np.ndarray, labels: List[str], threshold: float = 0.3) -> Optional[np.ndarray]:
+    def segment(self, rgb: np.ndarray, label: str, box: Optional[List[int]], threshold: float = 0.3) -> Optional[np.ndarray]:
         image = Image.fromarray(rgb.astype(np.uint8))
-        detections = self._detect(image, labels, threshold)
-
-        if not detections:
-            return None
+        detections = []
+        
+        if box is None:
+            logging.info(f"Segmenting {label} without bounding box, label {label}")
+            detections = self._detect(image, [label], threshold)
+            if not detections or len(detections) == 0:
+                return None
+        else:
+            logging.info(f"Segmenting {label} with bounding box {box}")
+            detections.append(DetectionResult(
+                score=threshold,
+                label=label,
+                box=box
+            ))
 
         detections = self._segment(image, detections, polygon_refinement=True)
-
         if detections:
             return detections[0].mask
 

@@ -51,13 +51,14 @@ class ZerithFoundationPoseClient:
         }
         return self.send_request('detection', **params)
 
-    def register(self, K, rgb, depth, labels=None, threshold=0.3, iteration=5):
+    def register(self, K, rgb, depth, label=None, box=None, threshold=0.3, iteration=5):
         """Call register interface"""
         params = {
             'K': K,
             'rgb': rgb,
             'depth': depth,
-            'labels': labels if labels else ["object."],
+            'label': label,
+            'box': box,
             'threshold': threshold,
             'iteration': iteration
         }
@@ -203,6 +204,8 @@ def bottle_client(args):
     os.makedirs(f'{args.debug_dir}/ob_in_cam', exist_ok=True)
     os.makedirs(f'{args.debug_dir}/track_vis', exist_ok=True)
 
+    # static image
+    print("Processing static image...")
     rgb_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_rgb.png"
     depth_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_depth.npy"
     
@@ -215,73 +218,78 @@ def bottle_client(args):
             return
         print(f"Detection successful, {response}")
 
-        for i in range(10):
-            # Get frame data
-            color = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
-            color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
-            depth = np.load(depth_path)
+        for box_dict in response['boxes']:
+            label = box_dict['label']
+            box = [int(box_dict['x1']), int(box_dict['y1']), int(box_dict['x2']), int(box_dict['y2'])]
+            print(f" Label: {label}, Box: {box}")
+            for i in range(10):
+                # Get frame data
+                color = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
+                color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
+                depth = np.load(depth_path)
 
-            K_color = np.array([
-                [607.62, 0.00,  329.68],
-                [0.00,  608.40, 243.36],
-                [0.00,  0.00, 1.00]
-            ])
-            
-            if i == 0:
-                # First frame: register
-                print(f"Registering frame {i}...")
-                response = client.register(
-                    K=K_color,
-                    rgb=color,
-                    depth=depth,
-                    labels=args.labels,
-                    threshold=0.34,
-                    iteration=5
-                )
+                K_color = np.array([
+                    [607.62, 0.00,  329.68],
+                    [0.00,  608.40, 243.36],
+                    [0.00,  0.00, 1.00]
+                ])
                 
-                if response['status'] != 'success':
-                    print(f"Registration failed: {response.get('message', 'Unknown error')}")
-                    break
+                if i == 0:
+                    # First frame: register
+                    print(f"Registering frame {i}...")
+                    response = client.register(
+                        K=K_color,
+                        rgb=color,
+                        depth=depth,
+                        label=label,
+                        box=box,
+                        threshold=0.34,
+                        iteration=5
+                    )
+                    
+                    if response['status'] != 'success':
+                        print(f"Registration failed: {response.get('message', 'Unknown error')}")
+                        break
+                    
+                    pose = response['pose']
+                    pose = pose.numpy()
+                    print(f"Registration successful")
+                else:
+                    # Subsequent frames: track
+                    start_time = time.time()
+                    response = client.track(
+                        K=K_color,
+                        rgb=color,
+                        depth=depth,
+                        iteration=2
+                    )
+                    
+                    if response['status'] != 'success':
+                        print(f"Tracking failed: {response.get('message', 'Unknown error')}")
+                        break
+                    
+                    pose = response['pose']
+                    pose = pose.numpy()
+                    end_time = time.time()
+                    print(f"Tracking frame {i} successful, time: {end_time - start_time}s")
                 
-                pose = response['pose']
-                pose = pose.numpy()
-                print(f"Registration successful")
-            else:
-                # Subsequent frames: track
-                start_time = time.time()
-                response = client.track(
-                    K=K_color,
-                    rgb=color,
-                    depth=depth,
-                    iteration=2
-                )
+                # Save pose
+                np.savetxt(f'{args.debug_dir}/ob_in_cam/{i}.txt', pose.reshape(4, 4))
                 
-                if response['status'] != 'success':
-                    print(f"Tracking failed: {response.get('message', 'Unknown error')}")
-                    break
+                # Compute center pose for visualization
+                center_pose = pose @ np.linalg.inv(to_origin)
                 
-                pose = response['pose']
-                pose = pose.numpy()
-                end_time = time.time()
-                print(f"Tracking frame {i} successful, time: {end_time - start_time}s")
-            
-            # Save pose
-            np.savetxt(f'{args.debug_dir}/ob_in_cam/{i}.txt', pose.reshape(4, 4))
-            
-            # Compute center pose for visualization
-            center_pose = pose @ np.linalg.inv(to_origin)
-            
-            # Draw 3D bounding box and XYZ axis
-            vis = draw_posed_3d_box(K_color, color.copy(), center_pose, bbox)
-            vis = draw_xyz_axis(vis, center_pose, scale=0.1, K=K_color, thickness=3, 
-                              transparency=0, is_input_rgb=True)
-            
-            # Display visualization
-            cv2.imshow('FoundationPose Tracking', vis[..., ::-1])
-            cv2.waitKey(1)
-            
-            # Save visualization
-            imageio.imwrite(f'{args.debug_dir}/track_vis/{i}.png', vis)
+                # Draw 3D bounding box and XYZ axis
+                vis = draw_posed_3d_box(K_color, color.copy(), center_pose, bbox)
+                vis = draw_xyz_axis(vis, center_pose, scale=0.1, K=K_color, thickness=3, 
+                                transparency=0, is_input_rgb=True)
+                
+                # Display visualization
+                cv2.imshow('FoundationPose Tracking', vis[..., ::-1])
+                cv2.waitKey(1)
+                
+                # Save visualization
+                imageio.imwrite(f'{args.debug_dir}/track_vis/{i}.png', vis)
         
         print("Processing complete")
     
