@@ -7,7 +7,7 @@ import cv2
 import os
 import imageio
 import trimesh
-from datareader import YcbineoatReader
+import time
 from Utils import *
 
 def parse_args():
@@ -18,7 +18,6 @@ def parse_args():
     parser.add_argument('--debug_dir', type=str, default='./client_debug', help='Directory to save debug outputs')
     parser.add_argument('--labels', type=str, nargs='+', default=["object."], help='Detection labels for registration')
     return parser.parse_args()
-
 
 class ZerithFoundationPoseClient:
     def __init__(self, server_addr):
@@ -79,219 +78,133 @@ class ZerithFoundationPoseClient:
         self.socket.close()
         self.context.term()
 
-
-def mustard_client(args):
-    # Load mesh and compute bounding box
-    mesh = trimesh.load(args.mesh_file)
+def load_mesh(mesh_file):
+    mesh = trimesh.load(mesh_file)
     to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
-    bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2, 3)
-    print(f"Loaded mesh: {args.mesh_file}")
+    mesh_bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2, 3)
+    print(f"Loaded mesh: {mesh_file}")
     print(f"Mesh extents: {extents}")
-    print(f"Mesh bbox: {bbox}")
-    
-    # Create client
-    client = ZerithFoundationPoseClient(args.server_addr)
-    
-    # Check server connection
+    print(f"Mesh bbox: {mesh_bbox}")
+    return to_origin, mesh_bbox
+
+
+def create_client(server_addr):
+    client = ZerithFoundationPoseClient(server_addr)
     response = client.ping()
     if response['status'] != 'success':
         print(f"Server connection failed: {response.get('message', 'Unknown error')}")
-        return
-    
+        return None
     print("Server connection established successfully")
+    return client
+
+
+def detect_parts(client, rgb_path):
+    color = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
+    color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
     
-    # Initialize reader
-    reader = YcbineoatReader(video_dir=args.video_dir, shorter_side=None, zfar=np.inf)
+    response = client.detection(color)
+    if response['status'] != 'success':
+        print(f"Detection failed: {response.get('message', 'Unknown error')}")
+        return None, None
     
-    # Create debug directories
-    os.makedirs(args.debug_dir, exist_ok=True)
-    os.makedirs(f'{args.debug_dir}/ob_in_cam', exist_ok=True)
-    os.makedirs(f'{args.debug_dir}/track_vis', exist_ok=True)
+    print(f"Detection successful, found {len(response['boxes'])} boxes")
+    return color, response['boxes']
+
+
+def process_label(client, K, color, depth, label, box, mesh_bbox, to_origin, label_output_dir, num_iterations=10):
+    os.makedirs(f'{label_output_dir}/ob_in_cam', exist_ok=True)
+    os.makedirs(f'{label_output_dir}/track_vis', exist_ok=True)
     
-    try:
-        for i in range(len(reader.color_files)):
-            print(f"Processing frame {i}/{len(reader.color_files)}")
+    print(f"\nProcessing label: {label}")
+    print(f"  Box: {box}")
+    print(f"  Output directory: {label_output_dir}")
+    
+    pose = None
+    for i in range(num_iterations):
+        if i == 0:
+            print(f"  Registering frame {i}...")
+            response = client.register(
+                K=K,
+                rgb=color,
+                depth=depth,
+                label=label,
+                box=box,
+                threshold=0.34,
+                iteration=5
+            )
             
-            # Get frame data
-            color = reader.get_color(i)
-            depth = reader.get_depth(i)
+            if response['status'] != 'success':
+                print(f"  Registration failed: {response.get('message', 'Unknown error')}")
+                break
             
-            if i == 0:
-                # First frame: register
-                print(f"Registering frame {i}...")
-                response = client.register(
-                    K=reader.K,
-                    rgb=color,
-                    depth=depth,
-                    labels=args.labels,
-                    threshold=0.3,
-                    iteration=5
-                )
-                
-                if response['status'] != 'success':
-                    print(f"Registration failed: {response.get('message', 'Unknown error')}")
-                    break
-                
-                pose = response['pose']
-                print(f"Registration successful")
-            else:
-                # Subsequent frames: track
-                start_time = time.time()
-                response = client.track(
-                    K=reader.K,
-                    rgb=color,
-                    depth=depth,
-                    iteration=2
-                )
-                
-                if response['status'] != 'success':
-                    print(f"Tracking failed: {response.get('message', 'Unknown error')}")
-                    break
-                
-                pose = response['pose']
-                end_time = time.time()
-                print(f"Tracking frame {i} successful, time: {end_time - start_time}s")
+            pose = response['pose']
+            pose = pose.numpy()
+            print(f"  Registration successful")
+        else:
+            start_time = time.time()
+            response = client.track(
+                K=K,
+                rgb=color,
+                depth=depth,
+                iteration=2
+            )
             
-            # Save pose
-            np.savetxt(f'{args.debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4, 4))
+            if response['status'] != 'success':
+                print(f"  Tracking failed: {response.get('message', 'Unknown error')}")
+                break
             
-            # Compute center pose for visualization
-            center_pose = pose @ np.linalg.inv(to_origin)
-            
-            # Draw 3D bounding box and XYZ axis
-            vis = draw_posed_3d_box(reader.K, color.copy(), center_pose, bbox)
-            vis = draw_xyz_axis(vis, center_pose, scale=0.1, K=reader.K, thickness=3, 
-                              transparency=0, is_input_rgb=True)
-            
-            # Display visualization
-            cv2.imshow('FoundationPose Tracking', vis[..., ::-1])
-            cv2.waitKey(1)
-            
-            # Save visualization
-            imageio.imwrite(f'{args.debug_dir}/track_vis/{reader.id_strs[i]}.png', vis)
+            pose = response['pose']
+            pose = pose.numpy()
+            end_time = time.time()
+            print(f"  Tracking frame {i} successful, time: {end_time - start_time}s")
         
-        print("Processing complete")
-    
-    except KeyboardInterrupt:
-        print("Client interrupted")
-    finally:
-        client.close()
-        cv2.destroyAllWindows()
+        np.savetxt(f'{label_output_dir}/ob_in_cam/{i}.txt', pose.reshape(4, 4))
+        
+        center_pose = pose @ np.linalg.inv(to_origin)
+        
+        vis = draw_posed_3d_box(K, color.copy(), center_pose, mesh_bbox)
+        vis = draw_xyz_axis(vis, center_pose, scale=0.1, K=K, thickness=3, 
+                          transparency=0, is_input_rgb=True)
+        
+        cv2.imshow('FoundationPose Tracking', vis[..., ::-1])
+        cv2.waitKey(1)
+        
+        imageio.imwrite(f'{label_output_dir}/track_vis/{i}.png', vis)
 
 
-def bottle_client(args):
-    # Load mesh and compute bounding box
-    mesh = trimesh.load(args.mesh_file)
-    to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
-    bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2, 3)
-    print(f"Loaded mesh: {args.mesh_file}")
-    print(f"Mesh extents: {extents}")
-    print(f"Mesh bbox: {bbox}")
+def main(args):
+    to_origin, mesh_bbox = load_mesh(args.mesh_file)
     
-    # Create client
-    client = ZerithFoundationPoseClient(args.server_addr)
-    
-    # Check server connection
-    response = client.ping()
-    if response['status'] != 'success':
-        print(f"Server connection failed: {response.get('message', 'Unknown error')}")
+    client = create_client(args.server_addr)
+    if client is None:
         return
     
-    print("Server connection established successfully")
-    
-    # Create debug directories
     os.makedirs(args.debug_dir, exist_ok=True)
-    os.makedirs(f'{args.debug_dir}/ob_in_cam', exist_ok=True)
-    os.makedirs(f'{args.debug_dir}/track_vis', exist_ok=True)
-
-    # static image
-    print("Processing static image...")
+    
     rgb_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_rgb.png"
     depth_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_depth.npy"
     
     try:  
-        color = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
-        color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
-        response = client.detection(color)
-        if response['status'] != 'success':
-            print(f"Detection failed: {response.get('message', 'Unknown error')}")
+        color, boxes = detect_parts(client, rgb_path)
+        if color is None or boxes is None:
             return
-        print(f"Detection successful, {response}")
-
-        for box_dict in response['boxes']:
+        
+        K_color = np.array([
+            [607.62, 0.00,  329.68],
+            [0.00,  608.40, 243.36],
+            [0.00,  0.00, 1.00]
+        ])
+        
+        depth = np.load(depth_path)
+        
+        for idx, box_dict in enumerate(boxes):
             label = box_dict['label']
             box = [int(box_dict['x1']), int(box_dict['y1']), int(box_dict['x2']), int(box_dict['y2'])]
-            print(f" Label: {label}, Box: {box}")
-            for i in range(10):
-                # Get frame data
-                color = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
-                color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
-                depth = np.load(depth_path)
-
-                K_color = np.array([
-                    [607.62, 0.00,  329.68],
-                    [0.00,  608.40, 243.36],
-                    [0.00,  0.00, 1.00]
-                ])
-                
-                if i == 0:
-                    # First frame: register
-                    print(f"Registering frame {i}...")
-                    response = client.register(
-                        K=K_color,
-                        rgb=color,
-                        depth=depth,
-                        label=label,
-                        box=box,
-                        threshold=0.34,
-                        iteration=5
-                    )
-                    
-                    if response['status'] != 'success':
-                        print(f"Registration failed: {response.get('message', 'Unknown error')}")
-                        break
-                    
-                    pose = response['pose']
-                    pose = pose.numpy()
-                    print(f"Registration successful")
-                else:
-                    # Subsequent frames: track
-                    start_time = time.time()
-                    response = client.track(
-                        K=K_color,
-                        rgb=color,
-                        depth=depth,
-                        iteration=2
-                    )
-                    
-                    if response['status'] != 'success':
-                        print(f"Tracking failed: {response.get('message', 'Unknown error')}")
-                        break
-                    
-                    pose = response['pose']
-                    pose = pose.numpy()
-                    end_time = time.time()
-                    print(f"Tracking frame {i} successful, time: {end_time - start_time}s")
-                
-                # Save pose
-                np.savetxt(f'{args.debug_dir}/ob_in_cam/{i}.txt', pose.reshape(4, 4))
-                
-                # Compute center pose for visualization
-                center_pose = pose @ np.linalg.inv(to_origin)
-                
-                # Draw 3D bounding box and XYZ axis
-                vis = draw_posed_3d_box(K_color, color.copy(), center_pose, bbox)
-                vis = draw_xyz_axis(vis, center_pose, scale=0.1, K=K_color, thickness=3, 
-                                transparency=0, is_input_rgb=True)
-                
-                # Display visualization
-                cv2.imshow('FoundationPose Tracking', vis[..., ::-1])
-                cv2.waitKey(1)
-                
-                # Save visualization
-                imageio.imwrite(f'{args.debug_dir}/track_vis/{i}.png', vis)
+            
+            label_output_dir = f'{args.debug_dir}/label_{idx}'
+            process_label(client, K_color, color, depth, label, box, mesh_bbox, to_origin, label_output_dir)
         
-        print("Processing complete")
+        print("\nProcessing complete")
     
     except KeyboardInterrupt:
         print("Client interrupted")
@@ -302,4 +215,4 @@ def bottle_client(args):
 
 if __name__ == '__main__':
     args = parse_args()
-    bottle_client(args)
+    main(args)
