@@ -11,18 +11,36 @@ from transformers import AutoModel, AutoTokenizer, AutoProcessor
 class LocateAnythingWorker:
     """Stateful worker that loads the model once and serves perception queries."""
 
-    optimized_categories = [
-        "white translucent plastic brake fluid reservoir with a blue or black cap",
-        "a T-shaped black metal car door checker with a wide top head and a narrow bottom stem", 
-        "large black rectangular box or foam block base",
-        "black robotic arm or gripper"
+    _category_configs = [
+        {
+            "label": "white translucent plastic brake fluid reservoir with a blue or black cap",
+            "enabled": True,
+            "area_range": (0.020, 0.08),
+            "color": "blue"
+        },
+        {
+            "label": "a T-shaped black metal car door checker with a wide top head and a narrow bottom stem",
+            "enabled": True,
+            "area_range": (0.025, 0.08),
+            "color": "red"
+        },
+        {
+            "label": "large black rectangular box or foam block base",
+            "enabled": False,
+            "area_range": None,
+            "color": None
+        },
+        {
+            "label": "black robotic arm or gripper",
+            "enabled": False,
+            "area_range": None,
+            "color": None
+        }
     ]
-
-    optimized_categories_index = {0, 1}
-    optimized_categories_area_threshold = {
-        0: (0.020, 0.08),
-        1: (0.025, 0.08),
-    }
+    
+    @property
+    def optimized_categories(self):
+        return [config["label"] for config in self._category_configs]
 
     def __init__(self, model_path: str, device: str = "cuda", dtype=torch.bfloat16):
         self.device = device
@@ -94,6 +112,29 @@ class LocateAnythingWorker:
         cats = "</c>".join(categories)
         prompt = f"Locate all the instances that matches the following description: {cats}."
         return self.predict(image, prompt, **kwargs)
+    
+    def _filter_boxes(self, boxes: list[dict], image_area: int) -> list[dict]:
+        """Filter boxes based on category config."""
+        label_to_config = {config["label"]: config for config in self._category_configs}
+        filtered = []
+        for box in boxes:
+            config = label_to_config.get(box["label"])
+            if config is None or not config["enabled"]:
+                continue
+            box_area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
+            box_area_ratio = box_area / image_area
+            min_area, max_area = config["area_range"]
+            if min_area <= box_area_ratio <= max_area:
+                filtered.append(box)
+        return filtered
+    
+    def detect_part(self, image: Image.Image) -> list[dict]:
+        """Part detection."""
+        result = self.detect(image, self.optimized_categories)
+        w, h = image.size
+        image_area = w * h
+        boxes = self.parse_boxes(result["answer"], w, h)
+        return self._filter_boxes(boxes, image_area)
 
     def ground_single(self, image: Image.Image, phrase: str, **kwargs) -> dict:
         """Phrase grounding — single instance."""
@@ -182,38 +223,21 @@ def main():
             print(f"Processing: {img_path.name}")
             img = Image.open(img_path).convert("RGB")
 
-            result = worker.detect(img, LocateAnythingWorker.optimized_categories)
-            print("Detection:", result["answer"])
-
-            w, h = img.size
-            boxes = LocateAnythingWorker.parse_boxes(result["answer"], w, h)
-            print("Boxes:", boxes)
+            filtered_boxes = worker.detect_part(img)
+            print("Filtered Boxes:", filtered_boxes)
 
             draw = ImageDraw.Draw(img)
+            w, h = img.size
             image_area = w * h
-            for box in boxes:
-                # Filter out boxes with invalid labels
-                if box["label"] not in LocateAnythingWorker.optimized_categories:
-                    continue
-                
-                # Filter out boxes with invalid categories
-                label_index = LocateAnythingWorker.optimized_categories.index(box["label"])
-                if label_index not in LocateAnythingWorker.optimized_categories_index:
-                    continue
-                    
-                # Filter out boxes with invalid area ratios
+            label_to_config = {config["label"]: config for config in worker._category_configs}
+            for box in filtered_boxes:
+                config = label_to_config.get(box["label"])
                 box_area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
                 box_area_ratio = box_area / image_area
-                min_area, max_area = LocateAnythingWorker.optimized_categories_area_threshold[label_index]
-                if not min_area <= box_area_ratio <= max_area:
-                    continue
-
-                if label_index == 0:
-                    draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="blue", width=2)
-                    draw.text((box["x1"], box["y1"]), f"{box['label']}\n({box_area_ratio:.1%})", fill="blue")
-                if label_index == 1:
-                    draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline="red", width=2)
-                    draw.text((box["x1"], box["y1"]), f"{box['label']}\n({box_area_ratio:.1%})", fill="red")
+                
+                color = config["color"]
+                draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline=color, width=2)
+                draw.text((box["x1"], box["y1"]), f"{box['label']}\n({box_area_ratio:.1%})", fill=color)
             output_path = output_dir / f"{img_path.stem}_boxes{img_path.suffix}"
             img.save(output_path)
             print(f"Saved: {output_path.name}")

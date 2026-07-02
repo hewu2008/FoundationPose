@@ -34,6 +34,17 @@ class ZerithServer:
         except Exception as save_e:
             logging.warning(f"Failed to save debug images: {str(save_e)}")
 
+    def _handle_detection(self, request):
+        try:
+            rgb = request['rgb']
+        except Exception as e:
+            logging.error(f"Error in detection: {str(e)}")
+            return {
+                'status': 'error',
+                'message': f'Detection failed: {str(e)}'
+            }
+
+
     def _handle_register(self, request):
         try:
             K = request['K']
