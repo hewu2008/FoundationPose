@@ -18,10 +18,10 @@ class LocateAnythingWorker:
         "black robotic arm or gripper"
     ]
 
-    optimized_categories_index = {0}
+    optimized_categories_index = {0, 1}
     optimized_categories_area_threshold = {
-        0: (0.015, 0.1),
-        1: (0.015, 0.1),
+        0: (0.020, 0.08),
+        1: (0.025, 0.08),
     }
 
     def __init__(self, model_path: str, device: str = "cuda", dtype=torch.bfloat16):
