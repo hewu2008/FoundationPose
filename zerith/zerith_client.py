@@ -12,11 +12,11 @@ from Utils import *
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Zerith FoundationPose Client')
-    parser.add_argument('--video_dir', type=str, required=True, help='Path to video scene directory')
     parser.add_argument('--mesh_file', type=str, required=True, help='Path to mesh OBJ file')
     parser.add_argument('--server_addr', type=str, default='tcp://localhost:5555', help='ZMQ server address')
     parser.add_argument('--debug_dir', type=str, default='./client_debug', help='Directory to save debug outputs')
-    parser.add_argument('--labels', type=str, nargs='+', default=["object."], help='Detection labels for registration')
+    parser.add_argument('--rgb_path', type=str, default="/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_rgb.png", help='Path to RGB image')
+    parser.add_argument('--depth_path', type=str, default="/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_depth.npy", help='Path to depth image')
     return parser.parse_args()
 
 class ZerithFoundationPoseClient:
@@ -181,11 +181,8 @@ def main(args):
     
     os.makedirs(args.debug_dir, exist_ok=True)
     
-    rgb_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_rgb.png"
-    depth_path = "/home/jszn/hewu/alg-product/FoundationPose/assets/zerith_depth.npy"
-    
     try:  
-        color, boxes = detect_parts(client, rgb_path)
+        color, boxes = detect_parts(client, args.rgb_path)
         if color is None or boxes is None:
             return
         
@@ -195,7 +192,7 @@ def main(args):
             [0.00,  0.00, 1.00]
         ])
         
-        depth = np.load(depth_path)
+        depth = np.load(args.depth_path)
         
         for idx, box_dict in enumerate(boxes):
             label = box_dict['label']
