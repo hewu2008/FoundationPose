@@ -23,7 +23,7 @@ class LocateAnythingWorker:
             "label": "a T-shaped black metal car door checker with a wide top head and a narrow bottom stem",
             "mesh_file": "assets/DPUB-551004004-AAX_04_01.obj",
             "enabled": True,
-            "area_range": (0.025, 0.08),
+            "area_range": (0.015, 0.08),
             "color": "red"
         },
         {
@@ -33,7 +33,7 @@ class LocateAnythingWorker:
             "color": None
         },
         {
-            "label": "black robotic arm or gripper",
+            "label": "black robotic arm, gripper, or black mechanical mounting structures near the edge",
             "enabled": False,
             "area_range": None,
             "color": None
