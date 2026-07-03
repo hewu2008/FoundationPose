@@ -193,6 +193,7 @@ def main(args):
         ])
         
         depth = np.load(args.depth_path)
+        print(f"depth dtype: {depth.dtype}, K_color dtype: {K_color.dtype}")
         
         for idx, box_dict in enumerate(boxes):
             label = box_dict['label']
