@@ -8,6 +8,4 @@ rm -rf "$DEBUG_DIR"
 
 python zerith/zerith_client.py \
     --mesh_file "assets/DPPUB-204001196-AAX_01_01.obj" \
-    --video_dir "demo_data/mustard0" \
-    --debug_dir "$DEBUG_DIR" \
-    --labels "small white plastic tank with black cap"
+    --debug_dir "$DEBUG_DIR"
