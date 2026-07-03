@@ -116,7 +116,7 @@ class LocateAnythingWorker:
         return self.predict(image, prompt, **kwargs)
     
     def _filter_boxes(self, boxes: list[dict], image_area: int) -> list[dict]:
-        """Filter boxes based on category config."""
+        """Filter boxes based on category config and sort by center x-coordinate."""
         label_to_config = {config["label"]: config for config in self._category_configs}
         filtered = []
         for box in boxes:
@@ -128,6 +128,8 @@ class LocateAnythingWorker:
             min_area, max_area = config["area_range"]
             if min_area <= box_area_ratio <= max_area:
                 filtered.append(box)
+        
+        filtered.sort(key=lambda b: (b["x1"] + b["x2"]) / 2)
         return filtered
     
     def detect_part(self, image: Image.Image) -> list[dict]:
@@ -232,14 +234,14 @@ def main():
             w, h = img.size
             image_area = w * h
             label_to_config = {config["label"]: config for config in worker._category_configs}
-            for box in filtered_boxes:
+            for idx, box in enumerate(filtered_boxes):
                 config = label_to_config.get(box["label"])
                 box_area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
                 box_area_ratio = box_area / image_area
                 
                 color = config["color"]
                 draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline=color, width=2)
-                draw.text((box["x1"], box["y1"]), f"{box['label']}\n({box_area_ratio:.1%})", fill=color)
+                draw.text((box["x1"], box["y1"]), f"[{idx}] {box['label']}\n({box_area_ratio:.1%})", fill=color)
             output_path = output_dir / f"{img_path.stem}_boxes{img_path.suffix}"
             img.save(output_path)
             print(f"Saved: {output_path.name}")
