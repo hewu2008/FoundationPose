@@ -40,7 +40,7 @@ class LocateAnythingWorker:
             "color": None
         },
         {
-            "label": "black robotic arm, gripper, or black mechanical mounting structures near the edge",
+            "label": "black robotic arm, gripper, or black mechanical mounting structures near the edge, exclude white objects",
             "enabled": False,
             "area_range": None,
             "color": None
