@@ -13,19 +13,26 @@ class LocateAnythingWorker:
 
     _category_configs = [
         {
-            "label": "white translucent plastic brake fluid reservoir with a blue or black cap",
+            "label": "a white translucent plastic brake fluid reservoir with a blue or black cap",
             "mesh_file": "assets/DPPUB-204001196-AAX_01_01.obj",
             "enabled": True,
             "area_range": (0.020, 0.08),
             "color": "blue"
         },
         {
-            "label": "a T-shaped black metal car door checker with a wide top head and a narrow bottom stem",
-            "mesh_file": "assets/DPUB-551004004-AAX_04_01.obj",
+            "label": "a white smooth solid rectangular or square block with straight edges, with or without holes",
+            "mesh_file": "assets/DPUB-551004004-AAX_04_02.obj",
             "enabled": True,
+            "area_range": (0.005, 0.08),
+            "color": "green"
+        },
+        {
+            "label": "T-shaped black metal car door checker with a wide top head and a narrow bottom stem",
+            "mesh_file": "assets/DPUB-551004004-AAX_04_01.obj",
+            "enabled": False,
             "area_range": (0.015, 0.08),
             "color": "red"
-        },
+        }, 
         {
             "label": "large black rectangular box or foam block base",
             "enabled": False,
