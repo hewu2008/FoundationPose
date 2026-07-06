@@ -9,6 +9,7 @@ import imageio
 import trimesh
 import time
 from Utils import *
+from zerith.zerith_locate_anything import LocateAnythingWorker
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Zerith FoundationPose Client')
@@ -173,8 +174,6 @@ def process_label(client, K, color, depth, label, box, mesh_bbox, to_origin, lab
 
 
 def main(args):
-    to_origin, mesh_bbox = load_mesh(args.mesh_file)
-    
     client = create_client(args.server_addr)
     if client is None:
         return
@@ -197,6 +196,13 @@ def main(args):
         
         for idx, box_dict in enumerate(boxes):
             label = box_dict['label']
+            label_to_config = {config["label"]: config for config in LocateAnythingWorker._category_configs}
+            config = label_to_config.get(label, None)
+            assert config is not None
+
+            mesh_file = config["mesh_file"]
+            to_origin, mesh_bbox = load_mesh(mesh_file)
+
             box = [int(box_dict['x1']), int(box_dict['y1']), int(box_dict['x2']), int(box_dict['y2'])]
             
             label_output_dir = f'{args.debug_dir}/label_{idx}'

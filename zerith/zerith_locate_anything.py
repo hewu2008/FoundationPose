@@ -21,7 +21,7 @@ class LocateAnythingWorker:
         },
         {
             "label": "a white smooth solid rectangular or square block with straight edges, with or without holes",
-            "mesh_file": "assets/DPUB-551004004-AAX_04_02.obj",
+            "mesh_file": "assets/DPUB-551004004-AAX_05.obj",
             "enabled": True,
             "area_range": (0.005, 0.08),
             "color": "green"
