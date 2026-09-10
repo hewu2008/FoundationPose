@@ -1,0 +1,30 @@
+{
+  "parts": [
+    {
+      "id": "cat2",
+      "yolo_class_name": "medium_fluid_reservoir",
+      "mesh_file": "../assets/category_2_2.obj"
+    },
+    {
+      "id": "cat3",
+      "yolo_class_name": "small_fluid_reservoir",
+      "mesh_file": "../assets/category_3.obj"
+    },
+    {
+      "id": "cat4",
+      "yolo_class_name": "linkage_cover",
+      "mesh_file": "../assets/category_4.obj"
+    },
+    {
+      "id": "cat5",
+      "yolo_class_name": "elbow_pipe",
+      "mesh_file": "../assets/category_5_1.obj"
+    },
+    {
+      "id": "cat6",
+      "yolo_class_name": "interior_door_handle",
+      "mesh_file": "../assets/category_6.obj"
+    }
+
+  ]
+}

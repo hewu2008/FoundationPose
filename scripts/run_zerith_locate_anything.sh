@@ -1,6 +1,52 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# LocateAnything 四类零件检测（joint + 面积/NMS + 本图尺寸消歧）
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+MODEL_PATH="${MODEL_PATH:-$ROOT/../model/LocateAnything-3B}"
+INPUT_DIR="${INPUT_DIR:-$ROOT/gzl_locate_anything}"
+OUTPUT_DIR="${OUTPUT_DIR:-$ROOT/runtime/locate_anything}"
+
+# joint（推荐）| per_class
+MODE="${MODE:-joint}"
+GENERATION_MODE="${GENERATION_MODE:-fast}"
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
+NMS_IOU="${NMS_IOU:-0.50}"
+CROSS_NMS_IOU="${CROSS_NMS_IOU:-0.50}"
+RUNAWAY_PATIENCE="${RUNAWAY_PATIENCE:-3}"
+DUMP_RAW="${DUMP_RAW:-}"
+GEN_VERBOSE="${GEN_VERBOSE:-}"
+LIMIT="${LIMIT:-0}"
+
+echo "========================================"
+echo "LocateAnything Detection"
+echo "========================================"
+echo "Model:      $MODEL_PATH"
+echo "Input:      $INPUT_DIR"
+echo "Output:     $OUTPUT_DIR"
+echo "Mode:       $MODE"
+echo "Generation: $GENERATION_MODE"
+echo "Max tokens: $MAX_NEW_TOKENS"
+echo "NMS IoU:    $NMS_IOU"
+echo "Cross NMS:  $CROSS_NMS_IOU"
+echo "Limit:      $LIMIT"
+echo "========================================"
 
 python zerith/zerith_locate_anything.py \
-    --model_path "/home/jszn/hewu/model_zoo/LocateAnything-3B" \
-    --input_dir "/home/jszn/hewu/dataset/locate_anything" \
-    --output_dir "runtime/locate_anything"
+    --model_path "$MODEL_PATH" \
+    --input_dir "$INPUT_DIR" \
+    --output_dir "$OUTPUT_DIR" \
+    --mode "$MODE" \
+    --generation_mode "$GENERATION_MODE" \
+    --max_new_tokens "$MAX_NEW_TOKENS" \
+    --temperature 0.0 \
+    --nms_iou "$NMS_IOU" \
+    --cross_nms_iou "$CROSS_NMS_IOU" \
+    --runaway_patience "$RUNAWAY_PATIENCE" \
+    --limit "$LIMIT" \
+    ${DUMP_RAW:+--dump_raw} \
+    ${GEN_VERBOSE:+--gen_verbose} \
+    "$@"

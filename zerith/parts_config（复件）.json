@@ -1,0 +1,96 @@
+{
+  "parts": [
+    // {
+    //   "id": "cat4",
+    //   "label": "a yellow silicone component with annular folds on the surface",
+    //   "mesh_file": "../assets/category_4.obj",
+    //   "enabled": true,
+    //   "area_range": [0.015, 0.048],
+    //   "aspect_range": [0.40, 3.50],
+    //   "color": "yellow",
+    //   "postprocess_role": "yellow",
+    //   "keywords": {
+    //     "yellow": 3,
+    //     "silicone": 1,
+    //     "annular": 1,
+    //     "folds": 1,
+    //     "bellow": 1
+    //   },
+    //   "conflict_score": {"base": 100.0, "area_scale": 1.0}
+    // },
+    {
+      "id": "cat1",
+      "label": "a white translucent plastic brake fluid reservoir with a blue or black cap",
+      "mesh_file": "../assets/category_1.obj",
+      "enabled": true,
+      "area_range": [0.025, 0.120],
+      "aspect_range": [0.55, 2.20],
+      "color": "red",
+      "postprocess_role": "cat1",
+      "supplement": true,
+      "supplement_labels": [
+        "a white translucent non-cylindrical irregular wedge-shaped brake fluid reservoir with a black round cap and a distinct blue side outlet",
+        "large white non-cylindrical polygonal wedge reservoir with a black circular cap and a distinct blue nozzle"
+      ],
+      "joint_min_area_from": ["cat2", "cat3"],
+      "prefer_tight_dedicated_box": true,
+      "merge_group": "white_reservoir",
+      "merged_box_padding": 0.15,
+      "keywords": {
+        "brake": 3,
+        "irregular": 1,
+        "translucent": 1,
+        "wedge": 1
+      },
+      "conflict_score": {"base": 40.0, "area_scale": 600.0}
+    },
+    {
+      "id": "cat3",
+      "label": "white cylindrical reservoir with black cap and two mounting ears",
+      "mesh_file": "../assets/category_3.obj",
+      "enabled": true,
+      "area_range": [0.012, 0.045],
+      "aspect_range": [0.40, 2.20],
+      "color": "blue",
+      "postprocess_role": "cat3",
+      "supplement": true,
+      "merge_group": "white_reservoir",
+      "keywords": {
+        "mounting ear": 3,
+        "mounting ears": 1,
+        "circular mounting": 1,
+        "two circular": 1,
+        "ears": 1
+      },
+      "conflict_score": {
+        "base": 56.0,
+        "area_scale": 400.0,
+        "target_area": 0.020
+      }
+    },
+    {
+      "id": "cat2",
+      "label": "white clutch reservoir with white cap and waisted body with side clamp",
+      "mesh_file": "../assets/category_2_1.obj",
+      "enabled": true,
+      "area_range": [0.020, 0.050],
+      "aspect_range": [0.45, 2.20],
+      "color": "green",
+      "postprocess_role": "cat2",
+      "supplement": true,
+      "merge_group": "white_reservoir",
+      "keywords": {
+        "clutch": 3,
+        "waisted": 3,
+        "waist": 1,
+        "clamp": 1,
+        "clamp band": 1
+      },
+      "conflict_score": {
+        "base": 55.0,
+        "area_scale": 350.0,
+        "target_area": 0.034
+      }
+    }
+  ]
+}

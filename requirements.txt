@@ -33,6 +33,7 @@ pyOpenGL>=3.1
 pyOpenGL_accelerate>=3.1
 
 # Inference stack (torch installed separately)
+ultralytics==8.4.104
 kornia>=0.7
 omegaconf>=2.3
 psutil

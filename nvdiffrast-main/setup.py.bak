@@ -1,0 +1,29 @@
+import os
+os.environ["CUDA_HOME"] = "/usr/local/cuda-12.8"
+from setuptools import setup
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+setup(
+    name='nvdiffrast',
+    packages=['nvdiffrast'],
+    package_dir={'nvdiffrast': 'nvdiffrast'},
+    ext_modules=[
+        CUDAExtension(
+            name='_nvdiffrast_c',
+            sources=[
+                'nvdiffrast/csrc/common.h',
+                'nvdiffrast/csrc/tensor.h',
+                'nvdiffrast/csrc/ops.h',
+                'nvdiffrast/csrc/ops.cpp',
+                'nvdiffrast/csrc/autograd.h',
+                'nvdiffrast/csrc/autograd.cpp',
+            ],
+            include_dirs=['nvdiffrast/csrc'],
+            extra_compile_args={
+                'cxx': ['-O3', '-std=c++14'],
+                'nvcc': ['-O3', '-std=c++14', '--expt-relaxed-constexpr'],
+            },
+        )
+    ],
+    cmdclass={'build_ext': BuildExtension},
+)

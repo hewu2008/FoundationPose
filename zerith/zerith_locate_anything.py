@@ -1,85 +1,212 @@
-# encoding:utf8 
+# encoding:utf8
+"""
+LocateAnything 工业四类零件检测。
+
+流程（简洁）：
+  1. joint 一次检测四类（靠 label + area_range 区分）
+  2. 面积 + 宽高比过滤
+  3. 同类 NMS、跨类 NMS
+  4. 后处理（无图序号）：
+     - 多个/参照大 cat1 时把偏小 cat1 → cat2
+     - 偏大 cat3 → cat2；偏小 cat2 → cat3（面积为辅压 cat2↔cat3）
+"""
+import json
 import re
-import os
+import time
 import torch
 import argparse
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from transformers import AutoModel, AutoTokenizer, AutoProcessor
+
+
+DEFAULT_PARTS_CONFIG = Path(__file__).with_name("parts_config.json")
+
+
+def load_part_configs(config_path=None) -> list:
+    """Load and validate the single source of truth for detectable parts."""
+    path = Path(config_path or DEFAULT_PARTS_CONFIG).expanduser().resolve()
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    configs = payload.get("parts") if isinstance(payload, dict) else payload
+    if not isinstance(configs, list) or not configs:
+        raise ValueError(f"parts config must contain a non-empty 'parts' list: {path}")
+
+    required = {"id", "label", "mesh_file", "area_range"}
+    normalized, ids, labels = [], set(), set()
+    for index, raw in enumerate(configs):
+        if not isinstance(raw, dict):
+            raise ValueError(f"parts[{index}] must be an object")
+        missing = required - raw.keys()
+        if missing:
+            raise ValueError(f"parts[{index}] missing fields: {sorted(missing)}")
+
+        config = dict(raw)
+        cid, label = str(config["id"]), str(config["label"])
+        if cid in ids or label in labels:
+            raise ValueError(f"duplicate part id or label: {cid}")
+        ids.add(cid)
+        labels.add(label)
+        config["id"], config["label"] = cid, label
+
+        area_range = config["area_range"]
+        if len(area_range) != 2 or not 0 <= area_range[0] < area_range[1] <= 1:
+            raise ValueError(f"invalid area_range for {cid}: {area_range}")
+        config["area_range"] = tuple(float(v) for v in area_range)
+        if "aspect_range" in config:
+            aspect_range = config["aspect_range"]
+            if len(aspect_range) != 2 or not 0 < aspect_range[0] < aspect_range[1]:
+                raise ValueError(f"invalid aspect_range for {cid}: {aspect_range}")
+            config["aspect_range"] = tuple(float(v) for v in aspect_range)
+        if "supplement_labels" in config:
+            config["supplement_labels"] = tuple(config["supplement_labels"])
+
+        mesh_path = Path(config["mesh_file"]).expanduser()
+        if not mesh_path.is_absolute():
+            mesh_path = path.parent / mesh_path
+        config["mesh_file"] = str(mesh_path.resolve())
+        normalized.append(config)
+    return normalized
 
 
 class LocateAnythingWorker:
     """Stateful worker that loads the model once and serves perception queries."""
 
-    _category_configs = [
-        {
-            "label": "a white translucent plastic brake fluid reservoir with a blue or black cap",
-            "mesh_file": "assets/DPPUB-204001196-AAX_01_01.obj",
-            "enabled": True,
-            "area_range": (0.020, 0.08),
-            "color": "blue"
-        },
-        {
-            "label": "a white smooth solid rectangular or square block with straight edges, with or without holes",
-            "mesh_file": "assets/DPUB-551004004-AAX_05.obj",
-            "enabled": True,
-            "area_range": (0.005, 0.08),
-            "color": "green"
-        },
-        {
-            "label": "T-shaped black metal car door checker with a wide top head and a narrow bottom stem",
-            "mesh_file": "assets/DPUB-551004004-AAX_04_01.obj",
-            "enabled": False,
-            "area_range": (0.015, 0.08),
-            "color": "red"
-        }, 
-        {
-            "label": "large black rectangular box or foam block base",
-            "enabled": False,
-            "area_range": None,
-            "color": None
-        },
-        {
-            "label": "black robotic arm, gripper, or black mechanical mounting structures near the edge, exclude white objects",
-            "enabled": False,
-            "area_range": None,
-            "color": None
-        }
-    ]
-    
+    # A black cap occupies a substantial part of a true cat3 proposal.  A much
+    # lower threshold turns cast shadows and a sliver of the blue bin in loose
+    # cat2 boxes into false "black caps".
+    _cat3_min_dark_frac = 0.070
+    _cat3_loose_min_dark_frac = 0.045
+    _cat3_min_dark_white_ratio = 0.145
+
+    # Kept as a class attribute for lightweight post-processing tests.
+    _category_configs = load_part_configs()
+
     @property
     def optimized_categories(self):
-        return [config["label"] for config in self._category_configs]
+        return [c["label"] for c in self._category_configs if c.get("enabled", True)]
 
-    def __init__(self, model_path: str, device: str = "cuda", dtype=torch.bfloat16):
+    def get_category_config(self, category_id=None, label=None):
+        """Return a configured part by stable id or detector label."""
+        for config in self._category_configs:
+            if category_id is not None and config["id"] == category_id:
+                return config
+            if label is not None and config["label"] == label:
+                return config
+        return None
+
+    def _config_by_role(self, role: str):
+        return next(
+            (c for c in self._category_configs if c.get("postprocess_role") == role),
+            None,
+        )
+
+    def __init__(
+        self,
+        model_path: str,
+        device: str = "cuda",
+        dtype=torch.bfloat16,
+        runaway_patience: int = 0,
+        parts_config=None,
+    ):
+        self._category_configs = load_part_configs(parts_config)
         self.device = device
         self.dtype = dtype
+        if device.startswith("cuda") and torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            try:
+                torch.set_float32_matmul_precision("high")
+            except Exception:
+                pass
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_path, trust_remote_code=True, fix_mistral_regex=True
+        )
+        self.processor = AutoProcessor.from_pretrained(
+            model_path, trust_remote_code=True, use_fast=True
+        )
         self.model = AutoModel.from_pretrained(
-            model_path,
-            torch_dtype=dtype,
-            trust_remote_code=True,
+            model_path, torch_dtype=dtype, trust_remote_code=True
         ).to(device).eval()
 
-    @torch.no_grad()
-    def predict(
-        self,
-        image: Image.Image,
-        question: str,
-        generation_mode: str = "hybrid",   # "fast" (MTP) | "slow" (NTP/AR) | "hybrid"
-        max_new_tokens: int = 2048,
-        temperature: float = 0.7,
-        verbose: bool = True,
-    ) -> dict:
-        messages = [
-            {"role": "user", "content": [
+        self.runaway_patience = max(0, int(runaway_patience))
+        self._gen_stop_state = {"last_box": None, "dup_streak": 0}
+        if self.runaway_patience:
+            self._install_box_runaway_early_stop()
+
+    def _reset_gen_stop_state(self):
+        self._gen_stop_state["last_box"] = None
+        self._gen_stop_state["dup_streak"] = 0
+
+    def _install_box_runaway_early_stop(self):
+        import sys
+        model_mod = sys.modules.get(type(self.model).__module__)
+        if model_mod is None or not hasattr(model_mod, "handle_pattern"):
+            return
+        if getattr(model_mod, "_la_box_runaway_early_stop", False):
+            return
+        original = model_mod.handle_pattern
+        state = self._gen_stop_state
+
+        def _decode_box(tokens, token_ids):
+            if tokens is None or len(tokens) < 6:
+                return None
+            cs = token_ids.get("coord_start_token_id")
+            if cs is None:
+                return None
+            try:
+                return tuple(int(tokens[i]) - cs for i in range(1, 5))
+            except Exception:
+                return None
+
+        def _iou(a, b):
+            ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+            ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            if inter <= 0:
+                return 0.0
+            ua = max(0, a[2] - a[0]) * max(0, a[3] - a[1])
+            ub = max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+            return inter / (ua + ub - inter)
+
+        def _should_stop(box):
+            if box is None:
+                return False
+            last = state["last_box"]
+            if last is not None and _iou(box, last) >= 0.85:
+                state["dup_streak"] += 1
+                if state["dup_streak"] >= self.runaway_patience:
+                    return True
+            else:
+                state["dup_streak"] = 0
+            state["last_box"] = box
+            return False
+
+        def patched(x0, token_ids, generation_mode="hybrid"):
+            result = original(x0, token_ids, generation_mode)
+            if result.get("type") == "coord_box":
+                box = _decode_box(result.get("tokens"), token_ids)
+                if _should_stop(box):
+                    return {
+                        "type": "im_end",
+                        "tokens": [token_ids["im_end_token_id"]],
+                        "need_switch_to_ar": False,
+                        "is_terminal": True,
+                    }
+            return result
+
+        model_mod.handle_pattern = patched
+        model_mod._la_box_runaway_early_stop = True
+
+    def _build_inputs(self, image: Image.Image, question: str):
+        messages = [{
+            "role": "user",
+            "content": [
                 {"type": "image", "image": image},
                 {"type": "text", "text": question},
-            ]}
-        ]
-
+            ],
+        }]
         text = self.processor.py_apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
@@ -87,114 +214,108 @@ class LocateAnythingWorker:
         inputs = self.processor(
             text=[text], images=images, videos=videos, return_tensors="pt"
         ).to(self.device)
+        return {
+            "pixel_values": inputs["pixel_values"].to(self.dtype),
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "image_grid_hws": inputs.get("image_grid_hws", None),
+        }
 
-        pixel_values = inputs["pixel_values"].to(self.dtype)
-        input_ids = inputs["input_ids"]
-        image_grid_hws = inputs.get("image_grid_hws", None)
+    @torch.no_grad()
+    def encode_image(self, image: Image.Image, question: str = ".") -> dict:
+        import numpy as np
+        packed = self._build_inputs(image, question)
+        pixel_values = packed["pixel_values"]
+        image_grid_hws = packed["image_grid_hws"]
+        grid_t = image_grid_hws
+        if grid_t is not None:
+            if isinstance(grid_t, np.ndarray):
+                grid_t = torch.from_numpy(grid_t).to(pixel_values.device, dtype=torch.int32)
+            elif not torch.is_tensor(grid_t):
+                grid_t = torch.as_tensor(grid_t, device=pixel_values.device, dtype=torch.int32)
+            else:
+                grid_t = grid_t.to(pixel_values.device, dtype=torch.int32)
+        vit_embeds = self.model.extract_feature(pixel_values, grid_t)
+        if grid_t is not None:
+            vit_embeds = torch.cat(vit_embeds, dim=0)
+            vit_embeds = self.model.mlp1(vit_embeds)
+        return {
+            "pixel_values": pixel_values,
+            "visual_features": vit_embeds,
+            "image_grid_hws": image_grid_hws,
+        }
 
-        response = self.model.generate(
-            pixel_values=pixel_values,
-            input_ids=input_ids,
-            attention_mask=inputs["attention_mask"],
-            image_grid_hws=image_grid_hws,
+    @torch.no_grad()
+    def predict(
+        self,
+        image: Image.Image,
+        question: str,
+        generation_mode: str = "fast",
+        max_new_tokens: int = 2048,
+        temperature: float = 0.0,
+        do_sample: bool = False,
+        verbose: bool = False,
+        image_cache: dict = None,
+    ) -> dict:
+        packed = self._build_inputs(image, question)
+        gen_kwargs = dict(
+            pixel_values=(
+                packed["pixel_values"] if image_cache is None
+                else image_cache["pixel_values"]
+            ),
+            input_ids=packed["input_ids"],
+            attention_mask=packed["attention_mask"],
             tokenizer=self.tokenizer,
             max_new_tokens=max_new_tokens,
             use_cache=True,
             generation_mode=generation_mode,
             temperature=temperature,
-            do_sample=True,
-            top_p=0.9,
+            do_sample=do_sample,
             repetition_penalty=1.1,
             verbose=verbose,
         )
-
+        if image_cache is not None and image_cache.get("visual_features") is not None:
+            gen_kwargs["visual_features"] = image_cache["visual_features"]
+            gen_kwargs["image_grid_hws"] = None
+        else:
+            gen_kwargs["image_grid_hws"] = packed["image_grid_hws"]
+        if do_sample:
+            gen_kwargs["top_p"] = 0.9
+        self._reset_gen_stop_state()
+        response = self.model.generate(**gen_kwargs)
         result = {"answer": response[0] if isinstance(response, tuple) else response}
         if isinstance(response, tuple) and len(response) >= 3:
             result["history"] = response[1]
             result["stats"] = response[2]
         return result
 
-    # ---- Convenience methods for each task ----
-
-    def detect(self, image: Image.Image, categories: list[str], **kwargs) -> dict:
-        """Object detection / document layout analysis."""
+    def detect(self, image: Image.Image, categories: list, **kwargs) -> dict:
         cats = "</c>".join(categories)
         prompt = f"Locate all the instances that matches the following description: {cats}."
         return self.predict(image, prompt, **kwargs)
-    
-    def _filter_boxes(self, boxes: list[dict], image_area: int) -> list[dict]:
-        """Filter boxes based on category config and sort by center x-coordinate."""
-        label_to_config = {config["label"]: config for config in self._category_configs}
-        filtered = []
-        for box in boxes:
-            config = label_to_config.get(box["label"])
-            if config is None or not config["enabled"]:
-                continue
-            box_area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
-            box_area_ratio = box_area / image_area
-            min_area, max_area = config["area_range"]
-            if min_area <= box_area_ratio <= max_area:
-                filtered.append(box)
-        
-        filtered.sort(key=lambda b: (b["x1"] + b["x2"]) / 2)
-        return filtered
-    
-    def detect_part(self, image: Image.Image) -> list[dict]:
-        """Part detection."""
-        result = self.detect(image, self.optimized_categories)
-        w, h = image.size
-        image_area = w * h
-        boxes = self.parse_boxes(result["answer"], w, h)
-        return self._filter_boxes(boxes, image_area)
-
-    def ground_single(self, image: Image.Image, phrase: str, **kwargs) -> dict:
-        """Phrase grounding — single instance."""
-        prompt = f"Locate a single instance that matches the following description: {phrase}."
-        return self.predict(image, prompt, **kwargs)
 
     def ground_multi(self, image: Image.Image, phrase: str, **kwargs) -> dict:
-        """Phrase grounding — multiple instances."""
         prompt = f"Locate all the instances that match the following description: {phrase}."
         return self.predict(image, prompt, **kwargs)
 
-    def ground_text(self, image: Image.Image, phrase: str, **kwargs) -> dict:
-        """Text grounding."""
-        prompt = f"Please locate the text referred as {phrase}."
-        return self.predict(image, prompt, **kwargs)
-
-    def detect_text(self, image: Image.Image, **kwargs) -> dict:
-        """Scene text detection."""
-        prompt = "Detect all the text in box format."
-        return self.predict(image, prompt, **kwargs)
-
-    def ground_gui(self, image: Image.Image, phrase: str, output_type: str = "box", **kwargs) -> dict:
-        """GUI grounding (box or point)."""
-        if output_type == "point":
-            prompt = f"Point to: {phrase}."
-        else:
-            prompt = f"Locate the region that matches the following description: {phrase}."
-        return self.predict(image, prompt, **kwargs)
-
-    def point(self, image: Image.Image, phrase: str, **kwargs) -> dict:
-        """Pointing."""
-        prompt = f"Point to: {phrase}."
-        return self.predict(image, prompt, **kwargs)
-
-    # ---- Utility: parse model output ----
-
     @staticmethod
-    def parse_boxes(answer: str, image_width: int, image_height: int) -> list[dict]:
-        """Parse model output into pixel-coordinate bounding boxes.
-
-        Coordinates in model output are normalized integers in [0, 1000].
-        """
+    def parse_boxes(answer: str, image_width: int, image_height: int) -> list:
         boxes = []
-        pattern = r"<ref>([^<]+)</ref><box><(\d+)><(\d+)><(\d+)><(\d+)></box>"
-        for m in re.finditer(pattern, answer):
-            label = m.group(1).strip()
-            x1, y1, x2, y2 = [int(g) for g in m.groups()[1:]]
+        current_label = ""
+        token_pattern = re.compile(
+            r"<ref>(?P<ref>.*?)</ref>"
+            r"|<box><(?P<x1>\d+)><(?P<y1>\d+)><(?P<x2>\d+)><(?P<y2>\d+)></box>",
+            flags=re.DOTALL,
+        )
+        for m in token_pattern.finditer(answer or ""):
+            if m.group("ref") is not None:
+                current_label = re.sub(r"\s+", " ", m.group("ref")).strip()
+                continue
+            x1, y1, x2, y2 = [int(m.group(k)) for k in ("x1", "y1", "x2", "y2")]
+            if not all(0 <= v <= 1000 for v in (x1, y1, x2, y2)) or x2 <= x1 or y2 <= y1:
+                continue
             boxes.append({
-                "label": label,
+                "label": current_label,
                 "x1": x1 / 1000 * image_width,
                 "y1": y1 / 1000 * image_height,
                 "x2": x2 / 1000 * image_width,
@@ -203,57 +324,637 @@ class LocateAnythingWorker:
         return boxes
 
     @staticmethod
-    def parse_points(answer: str, image_width: int, image_height: int) -> list[dict]:
-        """Parse model output into pixel-coordinate points."""
-        points = []
-        for m in re.finditer(r"<box><(\d+)><(\d+)></box>", answer):
-            x, y = int(m.group(1)), int(m.group(2))
-            points.append({
-                "x": x / 1000 * image_width,
-                "y": y / 1000 * image_height,
-            })
-        return points
+    def _box_area_ratio(box: dict, image_area: float) -> float:
+        return max(0.0, (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])) / max(image_area, 1.0)
+
+    @staticmethod
+    def _iou(a: dict, b: dict) -> float:
+        ix1 = max(a["x1"], b["x1"])
+        iy1 = max(a["y1"], b["y1"])
+        ix2 = min(a["x2"], b["x2"])
+        iy2 = min(a["y2"], b["y2"])
+        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+        if inter <= 0:
+            return 0.0
+        aa = (a["x2"] - a["x1"]) * (a["y2"] - a["y1"])
+        bb = (b["x2"] - b["x1"]) * (b["y2"] - b["y1"])
+        return inter / (aa + bb - inter)
+
+    def _nms(self, boxes: list, iou_thresh: float = 0.5) -> list:
+        if not boxes:
+            return []
+
+        def order_key(box):
+            cid = box.get("category_id", "")
+            area = float(box.get("area_ratio", 0.0) or 0.0)
+            # The two dedicated cat1 prompts intentionally produce a tight
+            # proposal and, in dense scenes, a larger box merged with a
+            # neighbour.  Prefer the tighter dedicated proposal.  Other
+            # classes retain the original large-first ordering.
+            config = self.get_category_config(category_id=cid) or {}
+            if config.get("prefer_tight_dedicated_box") and box.get("source") in (
+                "supplement",
+                "per_class",
+            ):
+                return cid, 0, area
+            return cid, 1, -area
+
+        ordered = sorted(
+            boxes,
+            key=order_key,
+        )
+        kept, suppressed = [], [False] * len(ordered)
+        for i, bi in enumerate(ordered):
+            if suppressed[i]:
+                continue
+            kept.append(bi)
+            for j in range(i + 1, len(ordered)):
+                if suppressed[j]:
+                    continue
+                bj = ordered[j]
+                if bi.get("category_id") != bj.get("category_id"):
+                    continue
+                if self._iou(bi, bj) >= iou_thresh:
+                    suppressed[j] = True
+        return kept
+
+    def _class_conflict_score(self, box: dict) -> float:
+        """跨类冲突得分（与「图0全对」版一致）。"""
+        area = float(box.get("area_ratio", 0.0) or 0.0)
+        config = self.get_category_config(category_id=box.get("category_id")) or {}
+        score = config.get("conflict_score", {})
+        base = float(score.get("base", 0.0))
+        scale = float(score.get("area_scale", 1.0))
+        target = score.get("target_area")
+        area_term = area if target is None else float(target) - abs(area - float(target))
+        return base + area_term * scale
+
+    def _cross_class_nms(self, boxes: list, iou_thresh: float = 0.5) -> list:
+        if not boxes:
+            return []
+        ordered = sorted(
+            boxes,
+            key=lambda b: (-self._class_conflict_score(b), -b.get("area_ratio", 0)),
+        )
+        kept = []
+        for box in ordered:
+            if any(self._iou(box, k) >= iou_thresh for k in kept):
+                continue
+            kept.append(box)
+        return kept
+
+    def _match_config(self, raw_label: str):
+        if not raw_label:
+            return None
+        by_label = {c["label"]: c for c in self._category_configs}
+        if raw_label in by_label:
+            return by_label[raw_label]
+        rl = raw_label.lower()
+        best, best_score = None, 0
+        for c in self._category_configs:
+            cand = c["label"].lower()
+            if cand in rl or rl in cand:
+                score = min(len(cand), len(rl))
+                if score > best_score:
+                    best_score, best = score, c
+        if best is not None:
+            return best
+        id_map = {c["id"]: c for c in self._category_configs}
+        scores = {}
+        for config in self._category_configs:
+            s = sum(
+                float(weight)
+                for keyword, weight in config.get("keywords", {}).items()
+                if keyword in rl
+            )
+            if s:
+                scores[config["id"]] = s
+        if not scores:
+            return None
+        ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
+        if len(ranked) == 1 or ranked[0][1] > ranked[1][1]:
+            return id_map[ranked[0][0]]
+        return None
+
+    def _filter_boxes(self, boxes: list, image_area: float, force_config=None) -> list:
+        id_cfg = {c["id"]: c for c in self._category_configs}
+        out = []
+        for box in boxes:
+            config = force_config or self._match_config(box.get("label", ""))
+            if config is None or not config.get("enabled", True):
+                continue
+            ratio = self._box_area_ratio(box, image_area)
+            if ratio >= 0.90:
+                continue
+            lo, hi = config["area_range"]
+            # A joint label can opt into the lower bounds of related classes.
+            if force_config is None:
+                related = [
+                    id_cfg[cid]["area_range"][0]
+                    for cid in config.get("joint_min_area_from", ())
+                    if cid in id_cfg
+                ]
+                if related:
+                    lo = min(lo, *related)
+            if not (lo <= ratio <= hi):
+                continue
+            w = box["x2"] - box["x1"]
+            h = box["y2"] - box["y1"]
+            aspect = w / h if h > 0 else 1.0
+            cid = config["id"]
+            aspect_lo, aspect_hi = config.get("aspect_range", (0.0, float("inf")))
+            if not (aspect_lo <= aspect <= aspect_hi):
+                continue
+            item = dict(box)
+            item["label"] = config["label"]
+            item["category_id"] = cid
+            item["mesh_file"] = config["mesh_file"]
+            item["area_ratio"] = ratio
+            out.append(item)
+        out.sort(key=lambda b: (b["x1"] + b["x2"]) / 2)
+        return out
+
+    @staticmethod
+    def _box_appearance(image: Image.Image, box: dict) -> dict:
+        """统计框内可解释的颜色特征，用于四类外观消歧。"""
+        iw, ih = image.size
+        x1 = max(0, min(iw - 1, int(box["x1"])))
+        y1 = max(0, min(ih - 1, int(box["y1"])))
+        x2 = max(x1 + 1, min(iw, int(box["x2"] + 0.999)))
+        y2 = max(y1 + 1, min(ih, int(box["y2"] + 0.999)))
+        pixels = list(image.crop((x1, y1, x2, y2)).convert("RGB").getdata())
+        total = max(len(pixels), 1)
+        neutral_dark = 0
+        yellow = 0
+        white = 0
+        for r, g, b in pixels:
+            hi = max(r, g, b)
+            lo = min(r, g, b)
+            if hi < 90 and hi - lo < 30:
+                neutral_dark += 1
+            if r > 120 and g > 90 and r > b * 1.4 and g > b * 1.25:
+                yellow += 1
+            if lo > 150 and hi - lo < 80:
+                white += 1
+        return {
+            "dark_frac": neutral_dark / total,
+            "yellow_frac": yellow / total,
+            "white_frac": white / total,
+        }
+
+    def _has_black_cap(self, appearance: dict) -> bool:
+        """Distinguish a real black cap from shadows in tight or loose boxes."""
+        dark = float(appearance.get("dark_frac", 0.0) or 0.0)
+        white = float(appearance.get("white_frac", 0.0) or 0.0)
+        return dark >= self._cat3_min_dark_frac or (
+            dark >= self._cat3_loose_min_dark_frac
+            and dark / max(white, 0.01) >= self._cat3_min_dark_white_ratio
+        )
+
+    def _postprocess_classes(self, boxes: list, image: Image.Image) -> list:
+        """用颜色外观修正模型给同一白色零件挂多个类别的问题。
+
+        cat2 为白盖，框内可能有阴影；cat3 有占比明显的黑盖。cat1 只有在
+        偏小且没有黑盖时才回退到 cat2，避免仅按面积误伤侧立的真 cat1。
+        """
+        if not boxes:
+            return boxes
+        id_cfg = {c["id"]: c for c in self._category_configs}
+        cat1_cfg = self._config_by_role("cat1")
+        cat2_cfg = self._config_by_role("cat2")
+        cat3_cfg = self._config_by_role("cat3")
+        iw, ih = image.size
+        result = []
+
+        for box in boxes:
+            item = dict(box)
+            cid = item.get("category_id")
+            config = id_cfg.get(cid)
+            if config is None:
+                continue
+            role = config.get("postprocess_role")
+            ar = float(item.get("area_ratio", 0.0) or 0.0)
+            bw = item["x2"] - item["x1"]
+            bh = item["y2"] - item["y1"]
+
+            # 黄色料箱边缘产生的伪框：贴左右边界、很窄但纵向很长。
+            touches_side = item["x1"] <= 2 or item["x2"] >= iw - 2
+            if touches_side and bw / max(iw, 1) < 0.14 and bh / max(ih, 1) > 0.30:
+                continue
+
+            # New categories are generic unless they explicitly opt into one
+            # of the tuned four-part post-processing roles.
+            if role not in {"yellow", "cat1", "cat2", "cat3"}:
+                result.append(item)
+                continue
+
+            app = self._box_appearance(image, item)
+            has_black_cap = self._has_black_cap(app)
+            item["appearance_dark_frac"] = app["dark_frac"]
+            item["appearance_yellow_frac"] = app["yellow_frac"]
+
+            if role == "yellow":
+                if app["yellow_frac"] < 0.12:
+                    continue
+                result.append(item)
+                continue
+
+            # 白色零件候选若主要覆盖黄色料箱/波纹套，直接丢弃。
+            if app["yellow_frac"] > 0.30:
+                continue
+
+            target_cfg = config
+            if role == "cat1":
+                # A proposal from the dedicated cat1 query already carries the
+                # strongest semantic evidence.  Do not demote a compact cat1
+                # merely because its area overlaps the cat2 range (frame 2).
+                if item.get("source") in ("supplement", "per_class"):
+                    target_cfg = cat1_cfg
+                elif ar < config["area_range"][0]:
+                    if (
+                        has_black_cap
+                        and cat3_cfg
+                        and cat3_cfg["area_range"][0] <= ar <= cat3_cfg["area_range"][1]
+                    ):
+                        target_cfg = cat3_cfg
+                    elif (
+                        cat2_cfg
+                        and cat2_cfg["area_range"][0] <= ar <= cat2_cfg["area_range"][1]
+                    ):
+                        target_cfg = cat2_cfg
+                    else:
+                        continue
+                elif (
+                    cat2_cfg
+                    and ar <= cat2_cfg["area_range"][1]
+                    and not has_black_cap
+                ):
+                    target_cfg = cat2_cfg
+            elif role in ("cat2", "cat3"):
+                target_cfg = cat3_cfg if has_black_cap else cat2_cfg
+                if target_cfg is None:
+                    target_cfg = config
+                target_lo, target_hi = target_cfg["area_range"]
+                if not (target_lo <= ar <= target_hi):
+                    continue
+
+            target = target_cfg["id"]
+            if target != cid:
+                item["refined_from"] = cid
+            item["category_id"] = target
+            item["label"] = target_cfg["label"]
+            item["mesh_file"] = target_cfg["mesh_file"]
+            result.append(item)
+        return result
+
+    def _suppress_reclassified_cat2_duplicates(self, boxes: list) -> list:
+        """Drop loose cat1-derived cat2 boxes when a native cat2 covers the object."""
+        cat1_cfg = self._config_by_role("cat1")
+        cat2_cfg = self._config_by_role("cat2")
+        if not cat1_cfg or not cat2_cfg:
+            return boxes
+        cat1_id, cat2_id = cat1_cfg["id"], cat2_cfg["id"]
+        native_cat2 = [
+            box
+            for box in boxes
+            if box.get("category_id") == cat2_id
+            and box.get("refined_from") != cat1_id
+        ]
+        if not native_cat2:
+            return boxes
+
+        kept = []
+        for box in boxes:
+            if box.get("category_id") != cat2_id or box.get("refined_from") != cat1_id:
+                kept.append(box)
+                continue
+            box_area = max(
+                1.0,
+                (box["x2"] - box["x1"]) * (box["y2"] - box["y1"]),
+            )
+            duplicate = False
+            for native in native_cat2:
+                native_area = max(
+                    1.0,
+                    (native["x2"] - native["x1"])
+                    * (native["y2"] - native["y1"]),
+                )
+                ix1 = max(box["x1"], native["x1"])
+                iy1 = max(box["y1"], native["y1"])
+                ix2 = min(box["x2"], native["x2"])
+                iy2 = min(box["y2"], native["y2"])
+                inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                if self._iou(box, native) >= 0.30 or inter / native_area >= 0.55:
+                    duplicate = True
+                    break
+            if not duplicate:
+                kept.append(box)
+        return kept
+
+    def _suppress_merged_boxes(self, boxes: list) -> list:
+        """删除同时横跨两个更小白色零件的合并框。"""
+        id_cfg = {c["id"]: c for c in self._category_configs}
+        grouped_ids = {
+            c["id"] for c in self._category_configs if c.get("merge_group")
+        }
+        kept = []
+        for i, box in enumerate(boxes):
+            cid = box.get("category_id")
+            config = id_cfg.get(cid, {})
+            group = config.get("merge_group")
+            if not group:
+                kept.append(box)
+                continue
+            area = float(box.get("area_ratio", 0.0) or 0.0)
+            bw = box["x2"] - box["x1"]
+            bh = box["y2"] - box["y1"]
+            padding = float(config.get("merged_box_padding", 0.0))
+            pad_x, pad_y = bw * padding, bh * padding
+            inside_children = []
+            for j, other in enumerate(boxes):
+                other_cfg = id_cfg.get(other.get("category_id"), {})
+                if (
+                    i == j
+                    or other.get("category_id") not in grouped_ids
+                    or other_cfg.get("merge_group") != group
+                ):
+                    continue
+                other_area = float(other.get("area_ratio", 0.0) or 0.0)
+                if other_area >= area * 0.82:
+                    continue
+                cx = (other["x1"] + other["x2"]) / 2
+                cy = (other["y1"] + other["y2"]) / 2
+                if (
+                    box["x1"] - pad_x <= cx <= box["x2"] + pad_x
+                    and box["y1"] - pad_y <= cy <= box["y2"] + pad_y
+                ):
+                    # Cross-class queries often return two nearly identical
+                    # boxes for the same child.  Count physical children, not
+                    # proposal records, when deciding that a parent is merged.
+                    if any(self._iou(other, child) >= 0.50 for child in inside_children):
+                        continue
+                    inside_children.append(other)
+                    if len(inside_children) >= 2:
+                        break
+            if len(inside_children) < 2:
+                kept.append(box)
+        return kept
+
+    def _suppress_cylinders_inside_cat1(self, boxes: list) -> list:
+        """真 cat1 内部的黑盖局部常被补检成一个额外 cat3 框。"""
+        cat1_cfg = self._config_by_role("cat1")
+        cylinder_ids = {
+            c["id"]
+            for c in (self._config_by_role("cat2"), self._config_by_role("cat3"))
+            if c
+        }
+        if not cat1_cfg or not cylinder_ids:
+            return boxes
+        cat1_boxes = [
+            b for b in boxes if b.get("category_id") == cat1_cfg["id"]
+        ]
+        if not cat1_boxes:
+            return boxes
+        kept = []
+        for box in boxes:
+            if box.get("category_id") not in cylinder_ids:
+                kept.append(box)
+                continue
+            box_area = max(
+                1.0,
+                (box["x2"] - box["x1"]) * (box["y2"] - box["y1"]),
+            )
+            covered = False
+            for parent in cat1_boxes:
+                parent_ratio = float(parent.get("area_ratio", 0.0) or 0.0)
+                box_ratio = float(box.get("area_ratio", 0.0) or 0.0)
+                if parent_ratio < box_ratio * 1.35:
+                    continue
+                ix1 = max(box["x1"], parent["x1"])
+                iy1 = max(box["y1"], parent["y1"])
+                ix2 = min(box["x2"], parent["x2"])
+                iy2 = min(box["y2"], parent["y2"])
+                inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                if inter / box_area >= 0.78:
+                    covered = True
+                    break
+            if not covered:
+                kept.append(box)
+        return kept
+
+    def detect_part(
+        self,
+        image: Image.Image,
+        mode: str = "joint",
+        generation_mode: str = "fast",
+        max_new_tokens: int = 2048,
+        temperature: float = 0.0,
+        do_sample: bool = False,
+        nms_iou: float = 0.5,
+        cross_nms_iou: float = 0.5,
+        verbose: bool = True,
+        dump_raw: bool = False,
+        gen_verbose: bool = False,
+        **_ignored,
+    ) -> list:
+        w, h = image.size
+        image_area = float(w * h)
+        gen_kwargs = dict(
+            generation_mode=generation_mode,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=do_sample,
+            verbose=gen_verbose,
+        )
+        t0 = time.perf_counter()
+        all_boxes = []
+
+        if mode == "joint":
+            result = self.detect(image, self.optimized_categories, **gen_kwargs)
+            if dump_raw:
+                print("[raw joint answer]", result["answer"])
+            parsed = self.parse_boxes(result["answer"], w, h)
+            joint = self._filter_boxes(parsed, image_area)
+            for box in joint:
+                box["source"] = "joint"
+            all_boxes = joint
+
+            # 白色零件在密集图中容易被 joint 漏掉；补 cat1/cat2/cat3。
+            # cat1 需要独立的「非圆柱、楔形、蓝色侧嘴」提示，cat2/cat3
+            # 则继续由框内黑盖/白盖外观做最终消歧。
+            supplement_configs = [
+                config
+                for config in self._category_configs
+                if config.get("enabled", True) and config.get("supplement", False)
+            ]
+            image_cache = self.encode_image(image) if supplement_configs else None
+            for config in supplement_configs:
+                if verbose:
+                    print(f"  -> supplement [{config['id']}] ...")
+                ground_labels = config.get("supplement_labels", (config["label"],))
+                for label_index, ground_label in enumerate(ground_labels, 1):
+                    result = self.ground_multi(
+                        image, ground_label, image_cache=image_cache, **gen_kwargs
+                    )
+                    if dump_raw:
+                        suffix = (
+                            f":{label_index}"
+                            if len(ground_labels) > 1
+                            else ""
+                        )
+                        print(
+                            f"[raw supplement {config['id']}{suffix}]",
+                            result["answer"],
+                        )
+                    parsed = self.parse_boxes(result["answer"], w, h)
+                    forced = self._filter_boxes(
+                        parsed, image_area, force_config=config
+                    )
+                    for box in forced:
+                        box["source"] = "supplement"
+                    all_boxes.extend(forced)
+        else:
+            # per_class：仅作可选兜底
+            image_cache = self.encode_image(image)
+            if verbose:
+                print("  vision encode done")
+            for config in self._category_configs:
+                if not config.get("enabled", True):
+                    continue
+                if verbose:
+                    print(f"  -> [{config['id']}] ...")
+                result = self.ground_multi(
+                    image, config["label"], image_cache=image_cache, **gen_kwargs
+                )
+                if dump_raw:
+                    print(f"[raw {config['id']}]", result["answer"])
+                parsed = self.parse_boxes(result["answer"], w, h)
+                forced = self._filter_boxes(parsed, image_area, force_config=config)
+                for box in forced:
+                    box["source"] = "per_class"
+                all_boxes.extend(forced)
+
+        all_boxes = self._postprocess_classes(all_boxes, image)
+        all_boxes = self._nms(all_boxes, iou_thresh=nms_iou)
+        all_boxes = self._suppress_reclassified_cat2_duplicates(all_boxes)
+        all_boxes = self._suppress_merged_boxes(all_boxes)
+        all_boxes = self._suppress_cylinders_inside_cat1(all_boxes)
+        all_boxes = self._cross_class_nms(all_boxes, iou_thresh=cross_nms_iou)
+        all_boxes = self._nms(all_boxes, iou_thresh=nms_iou)
+        all_boxes = self._cross_class_nms(all_boxes, iou_thresh=cross_nms_iou)
+        all_boxes.sort(key=lambda b: (b.get("category_id", ""), (b["x1"] + b["x2"]) / 2))
+        if verbose:
+            print(f"  detect_part total: {time.perf_counter() - t0:.2f}s  boxes={len(all_boxes)}")
+        return all_boxes
+
+
+def _draw_boxes(img: Image.Image, boxes: list, category_configs: list) -> Image.Image:
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    image_area = float(w * h)
+    label_to_config = {c["label"]: c for c in category_configs}
+    for idx, box in enumerate(boxes):
+        config = label_to_config.get(box["label"], {})
+        color = config.get("color", "red")
+        ratio = box.get("area_ratio")
+        if ratio is None:
+            ratio = ((box["x2"] - box["x1"]) * (box["y2"] - box["y1"])) / image_area
+        short = config.get("id") or box["label"][:40]
+        draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline=color, width=3)
+        draw.text(
+            (box["x1"], max(0, box["y1"] - 14)),
+            f"[{idx}] {short} ({ratio:.1%})",
+            fill=color,
+        )
+    return img
+
 
 def main():
-    parser = argparse.ArgumentParser(description='LocateAnything Worker')
-    parser.add_argument('--model_path', type=str, default='nvidia/LocateAnything-3B', help='Path to the LocateAnything model')
-    parser.add_argument('--input_dir', type=str, required=True, help='Directory containing input images')
-    parser.add_argument('--output_dir', type=str, default='./output', help='Directory to save output images')
+    parser = argparse.ArgumentParser(description="LocateAnything detection")
+    parser.add_argument("--model_path", type=str, default="nvidia/LocateAnything-3B")
+    parser.add_argument("--input_dir", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, default="./output")
+    parser.add_argument("--mode", type=str, default="joint", choices=["joint", "per_class"])
+    parser.add_argument(
+        "--generation_mode", type=str, default="fast", choices=["fast", "hybrid", "slow"]
+    )
+    parser.add_argument("--max_new_tokens", type=int, default=2048)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--do_sample", action="store_true")
+    parser.add_argument("--nms_iou", type=float, default=0.5)
+    parser.add_argument("--cross_nms_iou", type=float, default=0.5)
+    parser.add_argument("--runaway_patience", type=int, default=0)
+    parser.add_argument(
+        "--parts_config",
+        type=str,
+        default=str(DEFAULT_PARTS_CONFIG),
+        help="JSON file defining detectable parts and their mesh files",
+    )
+    parser.add_argument("--dump_raw", action="store_true")
+    parser.add_argument("--gen_verbose", action="store_true")
+    parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
+    if not input_dir.is_dir():
+        parser.error(f"input directory does not exist: {input_dir}")
+    if Path(args.model_path).is_absolute() and not Path(args.model_path).exists():
+        parser.error(f"model path does not exist: {args.model_path}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
+    exts = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
+    print(f"Loading model from {args.model_path} ...")
+    t_load = time.perf_counter()
+    worker = LocateAnythingWorker(
+        args.model_path,
+        runaway_patience=args.runaway_patience,
+        parts_config=args.parts_config,
+    )
+    print(f"Model loaded in {time.perf_counter() - t_load:.1f}s")
+    print(f"Config: mode={args.mode} generation_mode={args.generation_mode}")
 
-    worker = LocateAnythingWorker(args.model_path)
+    images = sorted(
+        [p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in exts],
+        key=lambda p: (0, int(p.stem)) if p.stem.isdigit() else (1, p.name),
+    )
+    if args.limit > 0:
+        images = images[: args.limit]
+    if not images:
+        print(f"No images found in {input_dir}")
+        return
 
-    for img_path in input_dir.iterdir():
-        if img_path.is_file() and img_path.suffix.lower() in image_extensions:
-            print(f"Processing: {img_path.name}")
-            img = Image.open(img_path).convert("RGB")
+    t_all = time.perf_counter()
+    for idx, img_path in enumerate(images, 1):
+        print(f"[{idx}/{len(images)}] Processing: {img_path.name}")
+        img = Image.open(img_path).convert("RGB")
+        boxes = worker.detect_part(
+            img,
+            mode=args.mode,
+            generation_mode=args.generation_mode,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            do_sample=args.do_sample,
+            nms_iou=args.nms_iou,
+            cross_nms_iou=args.cross_nms_iou,
+            verbose=True,
+            dump_raw=args.dump_raw,
+            gen_verbose=args.gen_verbose,
+        )
+        print(f"  Detections ({len(boxes)}):")
+        for i, b in enumerate(boxes):
+            print(
+                f"    [{i}] {b.get('category_id')} area={b.get('area_ratio', 0):.2%} "
+                f"box=({b['x1']:.0f},{b['y1']:.0f},{b['x2']:.0f},{b['y2']:.0f})"
+            )
+        vis = _draw_boxes(img.copy(), boxes, worker._category_configs)
+        out_path = output_dir / f"{img_path.stem}_boxes{img_path.suffix}"
+        vis.save(out_path)
+        print(f"  Saved: {out_path}")
 
-            filtered_boxes = worker.detect_part(img)
-            print("Filtered Boxes:", filtered_boxes)
-
-            draw = ImageDraw.Draw(img)
-            w, h = img.size
-            image_area = w * h
-            label_to_config = {config["label"]: config for config in worker._category_configs}
-            for idx, box in enumerate(filtered_boxes):
-                config = label_to_config.get(box["label"])
-                box_area = (box["x2"] - box["x1"]) * (box["y2"] - box["y1"])
-                box_area_ratio = box_area / image_area
-                
-                color = config["color"]
-                draw.rectangle((box["x1"], box["y1"], box["x2"], box["y2"]), outline=color, width=2)
-                draw.text((box["x1"], box["y1"]), f"[{idx}] {box['label']}\n({box_area_ratio:.1%})", fill=color)
-            output_path = output_dir / f"{img_path.stem}_boxes{img_path.suffix}"
-            img.save(output_path)
-            print(f"Saved: {output_path.name}")
-        else:
-            print(f"Skipping: {img_path.name}")
+    n = len(images)
+    elapsed = time.perf_counter() - t_all
+    print(f"Done: {n} images in {elapsed:.1f}s  ({elapsed / max(n, 1):.1f}s/image)")
 
 
 if __name__ == "__main__":

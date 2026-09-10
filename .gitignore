@@ -167,3 +167,12 @@ client_debug/
 debug_limiter/
 debug_bottle/
 runtime/
+
+# agent
+agent_img/
+
+# locate anyting
+gzl_locate_anything/
+locateanything_output/
+
+scripts/pytorch3d-main/
