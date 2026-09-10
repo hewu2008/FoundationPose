@@ -1,6 +1,5 @@
 #!/bin/bash
-cd /home/chery/gzl/jszn/Foundation_file/FoundationPose
-export PYTHONPATH=/home/chery/gzl/jszn/Foundation_file/FoundationPose
+export PYTHONPATH=/home/jszn/hewu/alg-product/FoundationPose
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 DEBUG_DIR="runtime/debug_zerith_server"
