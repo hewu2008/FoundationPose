@@ -1080,12 +1080,12 @@ def main():
 
         robot.switchControlMode(MotorControlMode.HIGH_LEVEL)
         robot.robot_init()
-        chassis_move(robot, 0.8)
+        # chassis_move(robot, 0.8)
         time.sleep(1.0)
         prepare_robot_posture(robot, 0, 0, 0.67, 1.2)
         arm_move_pre(robot, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [-0.1, 0.0, 0.30],
                 [0.0, 0.0, 0.0, 1.0])
-        chassis_move(robot, 0.3)
+        # chassis_move(robot, 0.3)
         time.sleep(2.0)
 
         #rgb_path, depth_path = capture_rgbd_data()
