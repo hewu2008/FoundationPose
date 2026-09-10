@@ -29,7 +29,7 @@ from camera_client import CameraClient
 # 直接复用 zerith_client.py 中的客户端及完整处理函数。
 # 客户端代码保持不变；Integrated 只负责调用并消费输出位姿。
 # ---------------------------------------------------------
-from zerith.zerith_client import (
+from zerith_client import (
     create_client,
     detect_parts,
     process_label,
@@ -51,7 +51,7 @@ GRIPPER_RELEASE_WAIT = 2.0  # 松爪后等待夹爪真正打开，再恢复腰�
 GRPC_TARGET = "localhost:50051"
 CAMERA_NAME = "rs/cam_high"
 #ZMQ_SERVER_ADDR = "tcp://172.31.200.245:5555"
-ZMQ_SERVER_ADDR = "tcp://192.168.3.28:5555"
+ZMQ_SERVER_ADDR = "tcp://10.42.0.95:5555"
 CLIENT_DEBUG_DIR = "./client_debug"
 REGISTER_ITERATIONS = 5
 RETRY_COUNT = 3600
