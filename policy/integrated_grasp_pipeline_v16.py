@@ -9,9 +9,12 @@ import threading
 import queue
 
 # ================= 导入 SDK 及环境配置 =================
-root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if root not in sys.path:
-    sys.path.insert(0, root)
+policy_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
+proto_dir = os.path.abspath(os.path.join(policy_dir, 'proto'))
+lib_dir = os.path.abspath(os.path.join(policy_dir, 'lib'))
+for _p in (proto_dir, lib_dir):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # 机器人 SDK
 from lib.lib_h1_sdk_python import (
