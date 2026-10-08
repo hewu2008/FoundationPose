@@ -51,7 +51,8 @@ GRIPPER_RELEASE_WAIT = 2.0  # 松爪后等待夹爪真正打开，再恢复腰�
 GRPC_TARGET = "localhost:50051"
 CAMERA_NAME = "rs/cam_high"
 #ZMQ_SERVER_ADDR = "tcp://172.31.200.245:5555"
-ZMQ_SERVER_ADDR = "tcp://10.42.0.95:5555"
+#ZMQ_SERVER_ADDR = "tcp://10.42.0.95:5555"
+ZMQ_SERVER_ADDR = "tcp://10.42.0.1:5555"
 CLIENT_DEBUG_DIR = "./client_debug"
 REGISTER_ITERATIONS = 5
 RETRY_COUNT = 3600
@@ -268,7 +269,7 @@ def arm_move_left(robot, target_pos, target_quat):
     arm_pos_rel = getattr(arm_state, "position", None)
     arm_quat_rel = getattr(arm_state, "rotation", None)
 
-    temp_xyz = [arm_pos_rel[0]+target_pos[0]-0.10, arm_pos_rel[1]+target_pos[1]-0.02, arm_pos_rel[2]+target_pos[2]]
+    temp_xyz = [target_pos[0]-0.10, target_pos[1], target_pos[2]-0.03]
         
     #temp_xyz = [arm_pos_rel[0]+target_pos[0]-0.10, arm_pos_rel[1]+target_pos[1], arm_pos_rel[2]+target_pos[2]]
     temp_quat = [0.0000, 0.0, 0.0000, 1]
@@ -304,7 +305,7 @@ def arm_move_right(robot, target_pos, target_quat):
     arm_pos_rel = getattr(arm_state, "position", None)
     arm_quat_rel = getattr(arm_state, "rotation", None)
     
-    temp_xyz = [arm_pos_rel[0]+target_pos[0]-0.10, arm_pos_rel[1]+target_pos[1]+0.02, arm_pos_rel[2]+target_pos[2]]
+    temp_xyz = [target_pos[0]-0.10, target_pos[1], target_pos[2]-0.03]
 
     #temp_xyz = [arm_pos_rel[0]+target_pos[0]-0.10, arm_pos_rel[1]+target_pos[1], arm_pos_rel[2]+target_pos[2]]
     temp_quat = [0.0000, 0.0, 0.0000, 1]
@@ -550,15 +551,8 @@ def calculate_target_relative_pose(cam_pos_rel, cam_quat_rel, arm_pos_rel, arm_q
     else:
         T3[:3, 3] = [-0.5743, 0.1800, -0.1208]
 
-    T4_inv = np.eye(4)
-    T4_inv[:3, :3] = R.from_quat(arm_quat_rel).as_matrix()
-    T4_inv[:3, 3] = arm_pos_rel
-    T_comp = np.eye(4)
-    
-    T4_inv = np.dot(T4_inv, T_comp)
-    T4 = np.linalg.inv(T4_inv)
 
-    T_obj_in_arm = np.dot(T4, np.dot(T3, np.dot(T2, np.dot(T1, T_obj_cam))))
+    T_obj_in_arm = np.dot(T3, np.dot(T2, np.dot(T1, T_obj_cam)))
 
     T_grasp_local = np.eye(4)
     T_grasp_local[:3, :3] = R.from_euler('xyz', [0.0, 0.0, 0.0], degrees=True).as_matrix()
@@ -1120,85 +1114,87 @@ def main():
         # chassis_move(robot, 0.3)
         time.sleep(2.0)
 
-        #rgb_path, depth_path = capture_rgbd_data()
-
-        # for attempt in range(RETRY_COUNT):
-        #     print(f"\n===== 抓取尝试 {attempt}/{RETRY_COUNT} =====")
-        #     # ------------------------------------------------
-        #     # 2. 拍摄 RGB-D 照片
-        #     # ------------------------------------------------
-        #     rgb_path, depth_path = capture_rgbd_data()
+        import pdb; pdb.set_trace()
         
-        #     # ------------------------------------------------
-        #     # 3. 对当前画面中的所有检测物体执行注册并保存各自位姿
-        #     # ------------------------------------------------
-        #     result_queue = queue.Queue()
+        rgb_path, depth_path = capture_rgbd_data()
 
-        #     perception_thread = threading.Thread(
-        #         target=run_perception_client,
-        #         args=(rgb_path, depth_path, CLIENT_DEBUG_DIR, result_queue),
-        #         daemon=True,
-        #     )
-        #     perception_thread.start()
-        #     time.sleep(0.1)
+        for attempt in range(RETRY_COUNT):
+            print(f"\n===== 抓取尝试 {attempt}/{RETRY_COUNT} =====")
+            # ------------------------------------------------
+            # 2. 拍摄 RGB-D 照片
+            # ------------------------------------------------
+            rgb_path, depth_path = capture_rgbd_data()
+        
+            # ------------------------------------------------
+            # 3. 对当前画面中的所有检测物体执行注册并保存各自位姿
+            # ------------------------------------------------
+            result_queue = queue.Queue()
 
-        #     while True:
-        #         if not perception_thread.is_alive():
-        #             print("感知线程已结束，开始进入双臂操作模式...")
-        #             break
-        #         item = result_queue.get()
-        #         if item is None:
-        #             print("主线程收到 None准备退出...")
-        #             break
-        #         category_id, instance_index, pose_path = item
-        #         print(f"\n[主线程] 收到物体位姿: {category_id}_{instance_index}")
-        #         print(pose_path)
-        #         flag, _, _ = select_arm(robot, pose_path)
-        #         if flag == 0:
-        #             execute_grasp_group(robot, left_item=item)
-        #         else:
-        #             execute_grasp_group(robot, right_item=item)
-        #         time.sleep(1.0)
+            perception_thread = threading.Thread(
+                target=run_perception_client,
+                args=(rgb_path, depth_path, CLIENT_DEBUG_DIR, result_queue),
+                daemon=True,
+            )
+            perception_thread.start()
+            time.sleep(0.1)
+
+            while True:
+                if not perception_thread.is_alive():
+                    print("感知线程已结束，开始进入双臂操作模式...")
+                    break
+                item = result_queue.get()
+                if item is None:
+                    print("主线程收到 None准备退出...")
+                    break
+                category_id, instance_index, pose_path = item
+                print(f"\n[主线程] 收到物体位姿: {category_id}_{instance_index}")
+                print(pose_path)
+                flag, _, _ = select_arm(robot, pose_path)
+                if flag == 0:
+                    execute_grasp_group(robot, left_item=item)
+                else:
+                    execute_grasp_group(robot, right_item=item)
+                time.sleep(1.0)
             
-        #     left_arm_queue, right_arm_queue, category_item_list = split_tasks_by_arm(robot, result_queue)
-        #     pairs = match_grasp_items_by_distance(left_arm_queue, right_arm_queue)
-        #     for pair in pairs:
-        #         left_item, right_item = pair
-        #         print(f"左臂: {left_item}, 右臂: {right_item}")
+            left_arm_queue, right_arm_queue, category_item_list = split_tasks_by_arm(robot, result_queue)
+            pairs = match_grasp_items_by_distance(left_arm_queue, right_arm_queue)
+            for pair in pairs:
+                left_item, right_item = pair
+                print(f"左臂: {left_item}, 右臂: {right_item}")
 
-        #         both_present = left_item is not None and right_item is not None
-        #         if both_present:
-        #             dist = compute_euclidean_distance(left_item[2], right_item[2])
-        #             if dist < 0.1:
-        #                 print(f"物体距离 {dist:.4f}m < 0.1m，采用双线程串行执行")
-        #                 execute_grasp_group(
-        #                     robot,
-        #                     left_item=left_item,
-        #                     right_item=right_item,
-        #                     parallel=False,
-        #                 )
-        #                 continue
+                both_present = left_item is not None and right_item is not None
+                if both_present:
+                    dist = compute_euclidean_distance(left_item[2], right_item[2])
+                    if dist < 0.1:
+                        print(f"物体距离 {dist:.4f}m < 0.1m，采用双线程串行执行")
+                        execute_grasp_group(
+                            robot,
+                            left_item=left_item,
+                            right_item=right_item,
+                            parallel=False,
+                        )
+                        continue
 
-        #         execute_grasp_group(
-        #             robot,
-        #             left_item=left_item,
-        #             right_item=right_item,
-        #             parallel=True,
-        #         )
+                execute_grasp_group(
+                    robot,
+                    left_item=left_item,
+                    right_item=right_item,
+                    parallel=True,
+                )
 
-        #     print("开始单独处理第4类零件...")
-        #     for category_item in  category_item_list:
-        #         category_id, instance_index, pose_path = category_item
-        #         print(f"\n[主线程] 收到物体位姿: {category_id}_{instance_index}")
-        #         print(pose_path)
-        #         flag, target_pos, angle = select_arm(robot, pose_path)
-        #         target_quat = R.from_euler("xyz",[angle, 0, 0],degrees=True).as_quat()
-        #         grasp_by_right1(robot, target_pos, target_quat, 'cat4')
-        #         time.sleep(1.0)
+            print("开始单独处理第4类零件...")
+            for category_item in  category_item_list:
+                category_id, instance_index, pose_path = category_item
+                print(f"\n[主线程] 收到物体位姿: {category_id}_{instance_index}")
+                print(pose_path)
+                flag, target_pos, angle = select_arm(robot, pose_path)
+                target_quat = R.from_euler("xyz",[angle, 0, 0],degrees=True).as_quat()
+                grasp_by_right1(robot, target_pos, target_quat, 'cat4')
+                time.sleep(1.0)
 
-        #     print("抓取流程在第 {attempt} 次尝试完成")
-        #     # time.sleep(1.0)
-        #     import pdb; pdb.set_trace()  
+            print("抓取流程在第 {attempt} 次尝试完成")
+            # time.sleep(1.0)
+            import pdb; pdb.set_trace()  
 
         while True:
             time.sleep(1.0)

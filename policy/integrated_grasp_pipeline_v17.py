@@ -40,9 +40,9 @@ from zerith_client import (
 RATE_HZ = 500             # 底层控制频率 500Hz
 DT = 1.0 / RATE_HZ        # 控制周期 0.002s
 
-# 腰部放料动作参数：正常高度 0.67m，松爪前下降到 0.57m。
-WAIST_NORMAL_Z = 0.67
-WAIST_RELEASE_Z = WAIST_NORMAL_Z - 0.18
+# 腰部放料动作参数：正常高度 0.65m，松爪前下降到 0.57m。
+WAIST_NORMAL_Z = 0.65
+WAIST_RELEASE_Z = WAIST_NORMAL_Z - 0.17
 WAIST_PITCH = 1.2
 WAIST_MOVE_DURATION = 2.0
 GRIPPER_RELEASE_WAIT = 2.0  # 松爪后等待夹爪真正打开，再恢复腰部
@@ -268,7 +268,7 @@ def arm_move_left(robot, target_pos, target_quat):
     arm_pos_rel = getattr(arm_state, "position", None)
     arm_quat_rel = getattr(arm_state, "rotation", None)
 
-    temp_xyz = [arm_pos_rel[0]+target_pos[0]-0.10, arm_pos_rel[1]+target_pos[1]-0.02, arm_pos_rel[2]+target_pos[2]]
+    temp_xyz = [target_pos[0]-0.10, target_pos[1], target_pos[2]]
         
     #temp_xyz = [arm_pos_rel[0]+target_pos[0]-0.10, arm_pos_rel[1]+target_pos[1], arm_pos_rel[2]+target_pos[2]]
     temp_quat = [0.0000, 0.0, 0.0000, 1]
@@ -304,7 +304,7 @@ def arm_move_right(robot, target_pos, target_quat):
     arm_pos_rel = getattr(arm_state, "position", None)
     arm_quat_rel = getattr(arm_state, "rotation", None)
     
-    temp_xyz = [arm_pos_rel[0]+target_pos[0]-0.10, arm_pos_rel[1]+target_pos[1]+0.02, arm_pos_rel[2]+target_pos[2]]
+    temp_xyz = [target_pos[0]-0.10, target_pos[1], target_pos[2]]
 
     #temp_xyz = [arm_pos_rel[0]+target_pos[0]-0.10, arm_pos_rel[1]+target_pos[1], arm_pos_rel[2]+target_pos[2]]
     temp_quat = [0.0000, 0.0, 0.0000, 1]
@@ -550,15 +550,8 @@ def calculate_target_relative_pose(cam_pos_rel, cam_quat_rel, arm_pos_rel, arm_q
     else:
         T3[:3, 3] = [-0.5743, 0.1800, -0.1208]
 
-    T4_inv = np.eye(4)
-    T4_inv[:3, :3] = R.from_quat(arm_quat_rel).as_matrix()
-    T4_inv[:3, 3] = arm_pos_rel
-    T_comp = np.eye(4)
-    
-    T4_inv = np.dot(T4_inv, T_comp)
-    T4 = np.linalg.inv(T4_inv)
 
-    T_obj_in_arm = np.dot(T4, np.dot(T3, np.dot(T2, np.dot(T1, T_obj_cam))))
+    T_obj_in_arm = np.dot(T3, np.dot(T2, np.dot(T1, T_obj_cam)))
 
     T_grasp_local = np.eye(4)
     T_grasp_local[:3, :3] = R.from_euler('xyz', [0.0, 0.0, 0.0], degrees=True).as_matrix()
@@ -745,18 +738,18 @@ def grasp_by_left(robot, target_pos, target_quat, thread_index, sync_state):
     time.sleep(2.0)
 
     arm_move_rec(robot, ArmAction.LEFT_ARM, -0.2, 0, 0.05)
-    #prepare_robot_posture(robot, 0.67, 1.2, 0.75, 1.0)
+    #prepare_robot_posture(robot, 0.70, 1.2, 0.75, 1.0)
     #arm_move_rec(robot, ArmAction.LEFT_ARM, 0, 0.25, 0)
     ok_arm, arm_state = robot.getHandRelative(ArmAction.LEFT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
-    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [0.0, 0.30, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [0.0, 0.30, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
     #arm_move_rec(robot, ArmAction.LEFT_ARM, 0.2, 0, -0.1)
     ok_arm, arm_state = robot.getHandRelative(ArmAction.LEFT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
-    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [0.17, 0.30, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [0.17, 0.30, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
 
     # 松爪前：只有 thread_0 下降腰部；thread_1 等待 thread_0 完成。
@@ -773,21 +766,21 @@ def grasp_by_left(robot, target_pos, target_quat, thread_index, sync_state):
     ok_arm, arm_state = robot.getHandRelative(ArmAction.LEFT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
-    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [0.0, 0.30, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [0.0, 0.30, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
 
     ok_arm, arm_state = robot.getHandRelative(ArmAction.LEFT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
-    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [-0.1, 0.0, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [-0.1, 0.0, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
     ok_arm, arm_state = robot.getHandRelative(ArmAction.LEFT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
     print(arm_pos_rel, arm_quat_rel)
-    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [-0.1, 0.0, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.LEFT_ARM, arm_pos_rel, arm_quat_rel, [-0.1, 0.0, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
-    # prepare_robot_posture(robot, 0.75, 1.0, 0.67, 1.2)
+    # prepare_robot_posture(robot, 0.75, 1.0, 0.70, 1.2)
     # time.sleep(1.0)
 
 
@@ -806,18 +799,18 @@ def grasp_by_right(robot, target_pos, target_quat, thread_index, sync_state):
     time.sleep(2.0)
 
     arm_move_rec(robot, ArmAction.RIGHT_ARM, -0.2, 0, 0.05)
-    #prepare_robot_posture(robot, 0.67, 1.2, 0.75, 1.0)
+    #prepare_robot_posture(robot, 0.70, 1.2, 0.75, 1.0)
     #arm_move_rec(robot, ArmAction.RIGHT_ARM, 0, -0.25, 0)
     ok_arm, arm_state = robot.getHandRelative(ArmAction.RIGHT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
-    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [0.0, -0.30, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [0.0, -0.30, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
     #arm_move_rec(robot, ArmAction.RIGHT_ARM, 0.2, 0, -0.1)
     ok_arm, arm_state = robot.getHandRelative(ArmAction.RIGHT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
-    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [0.17, -0.30, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [0.17, -0.30, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
 
     # 松爪前：只有 thread_0 下降腰部；thread_1 等待 thread_0 完成。
@@ -834,21 +827,21 @@ def grasp_by_right(robot, target_pos, target_quat, thread_index, sync_state):
     ok_arm, arm_state = robot.getHandRelative(ArmAction.RIGHT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
-    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [0.0, -0.30, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [0.0, -0.30, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
     
     ok_arm, arm_state = robot.getHandRelative(ArmAction.RIGHT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
-    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [-0.1, 0.0, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [-0.1, 0.0, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
     ok_arm, arm_state = robot.getHandRelative(ArmAction.RIGHT_ARM)
     arm_pos_rel = getattr(arm_state, "position", None) 
     arm_quat_rel = getattr(arm_state, "rotation", None)
     print(arm_pos_rel, arm_quat_rel)
-    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [-0.1, 0.0, 0.30], [0, 0, 0, 1], 1)
+    _move_arm(robot, ArmAction.RIGHT_ARM, arm_pos_rel, arm_quat_rel, [-0.1, 0.0, 0.25], [0, 0, 0, 1], 1)
     time.sleep(1.0)
-    # prepare_robot_posture(robot, 0.75, 1.0, 0.67, 1.2)
+    # prepare_robot_posture(robot, 0.75, 1.0, 0.70, 1.2)
     # time.sleep(1.0)
 
 def grasp_by_right1(robot, target_pos, target_quat, cat):
@@ -1042,7 +1035,7 @@ def execute_grasp_group(robot, left_item=None, right_item=None, parallel=True):
     - thread_0 负责腰部下降和腰部恢复。
     - 所有手臂到达放料位后，thread_0 才下降腰部。
     - 所有夹爪都松开后，thread_0 立即恢复腰部。
-    - 腰部恢复到 0.67m 后，各手臂才执行撤回动作。
+    - 腰部恢复到 0.65m 后，各手臂才执行撤回动作。
 
     parallel=False 时，为避免近距离抓取冲突：
     thread_0 先抓取并到达放料位；随后才启动 thread_1。两只手都到达
@@ -1098,7 +1091,7 @@ def execute_grasp_group(robot, left_item=None, right_item=None, parallel=True):
             sync_state["waist_down_event"].is_set()
             and not sync_state["waist_restored_event"].is_set()
         ):
-            print("[腰部][安全兜底] 检测到腰部尚未恢复，立即恢复到 0.67m")
+            print("[腰部][安全兜底] 检测到腰部尚未恢复，立即恢复到 0.65m")
             move_waist_z(robot, WAIST_RELEASE_Z, WAIST_NORMAL_Z)
             sync_state["waist_restored_event"].set()
 
@@ -1114,91 +1107,91 @@ def main():
         robot.robot_init()
         # chassis_move(robot, 0.8)
         time.sleep(1.0)
-        prepare_robot_posture(robot, 0, 0, 0.67, 1.2)
-        arm_move_pre(robot, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [-0.1, 0.0, 0.30],
+        prepare_robot_posture(robot, 0, 0, 0.65, 1.2)
+        arm_move_pre(robot, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [-0.1, 0.0, 0.25],
                 [0.0, 0.0, 0.0, 1.0])
         # chassis_move(robot, 0.3)
         time.sleep(2.0)
 
-        #rgb_path, depth_path = capture_rgbd_data()
+        rgb_path, depth_path = capture_rgbd_data()
 
-        # for attempt in range(RETRY_COUNT):
-        #     print(f"\n===== 抓取尝试 {attempt}/{RETRY_COUNT} =====")
-        #     # ------------------------------------------------
-        #     # 2. 拍摄 RGB-D 照片
-        #     # ------------------------------------------------
-        #     rgb_path, depth_path = capture_rgbd_data()
+        for attempt in range(RETRY_COUNT):
+            print(f"\n===== 抓取尝试 {attempt}/{RETRY_COUNT} =====")
+            # ------------------------------------------------
+            # 2. 拍摄 RGB-D 照片
+            # ------------------------------------------------
+            rgb_path, depth_path = capture_rgbd_data()
         
-        #     # ------------------------------------------------
-        #     # 3. 对当前画面中的所有检测物体执行注册并保存各自位姿
-        #     # ------------------------------------------------
-        #     result_queue = queue.Queue()
+            # ------------------------------------------------
+            # 3. 对当前画面中的所有检测物体执行注册并保存各自位姿
+            # ------------------------------------------------
+            result_queue = queue.Queue()
 
-        #     perception_thread = threading.Thread(
-        #         target=run_perception_client,
-        #         args=(rgb_path, depth_path, CLIENT_DEBUG_DIR, result_queue),
-        #         daemon=True,
-        #     )
-        #     perception_thread.start()
-        #     time.sleep(0.1)
+            perception_thread = threading.Thread(
+                target=run_perception_client,
+                args=(rgb_path, depth_path, CLIENT_DEBUG_DIR, result_queue),
+                daemon=True,
+            )
+            perception_thread.start()
+            time.sleep(0.1)
 
-        #     while True:
-        #         if not perception_thread.is_alive():
-        #             print("感知线程已结束，开始进入双臂操作模式...")
-        #             break
-        #         item = result_queue.get()
-        #         if item is None:
-        #             print("主线程收到 None准备退出...")
-        #             break
-        #         category_id, instance_index, pose_path = item
-        #         print(f"\n[主线程] 收到物体位姿: {category_id}_{instance_index}")
-        #         print(pose_path)
-        #         flag, _, _ = select_arm(robot, pose_path)
-        #         if flag == 0:
-        #             execute_grasp_group(robot, left_item=item)
-        #         else:
-        #             execute_grasp_group(robot, right_item=item)
-        #         time.sleep(1.0)
+            while True:
+                if not perception_thread.is_alive():
+                    print("感知线程已结束，开始进入双臂操作模式...")
+                    break
+                item = result_queue.get()
+                if item is None:
+                    print("主线程收到 None准备退出...")
+                    break
+                category_id, instance_index, pose_path = item
+                print(f"\n[主线程] 收到物体位姿: {category_id}_{instance_index}")
+                print(pose_path)
+                flag, _, _ = select_arm(robot, pose_path)
+                if flag == 0:
+                    execute_grasp_group(robot, left_item=item)
+                else:
+                    execute_grasp_group(robot, right_item=item)
+                time.sleep(1.0)
             
-        #     left_arm_queue, right_arm_queue, category_item_list = split_tasks_by_arm(robot, result_queue)
-        #     pairs = match_grasp_items_by_distance(left_arm_queue, right_arm_queue)
-        #     for pair in pairs:
-        #         left_item, right_item = pair
-        #         print(f"左臂: {left_item}, 右臂: {right_item}")
+            left_arm_queue, right_arm_queue, category_item_list = split_tasks_by_arm(robot, result_queue)
+            pairs = match_grasp_items_by_distance(left_arm_queue, right_arm_queue)
+            for pair in pairs:
+                left_item, right_item = pair
+                print(f"左臂: {left_item}, 右臂: {right_item}")
 
-        #         both_present = left_item is not None and right_item is not None
-        #         if both_present:
-        #             dist = compute_euclidean_distance(left_item[2], right_item[2])
-        #             if dist < 0.1:
-        #                 print(f"物体距离 {dist:.4f}m < 0.1m，采用双线程串行执行")
-        #                 execute_grasp_group(
-        #                     robot,
-        #                     left_item=left_item,
-        #                     right_item=right_item,
-        #                     parallel=False,
-        #                 )
-        #                 continue
+                both_present = left_item is not None and right_item is not None
+                if both_present:
+                    dist = compute_euclidean_distance(left_item[2], right_item[2])
+                    if dist < 0.1:
+                        print(f"物体距离 {dist:.4f}m < 0.1m，采用双线程串行执行")
+                        execute_grasp_group(
+                            robot,
+                            left_item=left_item,
+                            right_item=right_item,
+                            parallel=False,
+                        )
+                        continue
 
-        #         execute_grasp_group(
-        #             robot,
-        #             left_item=left_item,
-        #             right_item=right_item,
-        #             parallel=True,
-        #         )
+                execute_grasp_group(
+                    robot,
+                    left_item=left_item,
+                    right_item=right_item,
+                    parallel=True,
+                )
 
-        #     print("开始单独处理第4类零件...")
-        #     for category_item in  category_item_list:
-        #         category_id, instance_index, pose_path = category_item
-        #         print(f"\n[主线程] 收到物体位姿: {category_id}_{instance_index}")
-        #         print(pose_path)
-        #         flag, target_pos, angle = select_arm(robot, pose_path)
-        #         target_quat = R.from_euler("xyz",[angle, 0, 0],degrees=True).as_quat()
-        #         grasp_by_right1(robot, target_pos, target_quat, 'cat4')
-        #         time.sleep(1.0)
+            print("开始单独处理第4类零件...")
+            for category_item in  category_item_list:
+                category_id, instance_index, pose_path = category_item
+                print(f"\n[主线程] 收到物体位姿: {category_id}_{instance_index}")
+                print(pose_path)
+                flag, target_pos, angle = select_arm(robot, pose_path)
+                target_quat = R.from_euler("xyz",[angle, 0, 0],degrees=True).as_quat()
+                grasp_by_right1(robot, target_pos, target_quat, 'cat4')
+                time.sleep(1.0)
 
-        #     print("抓取流程在第 {attempt} 次尝试完成")
-        #     # time.sleep(1.0)
-        #     import pdb; pdb.set_trace()  
+            print("抓取流程在第 {attempt} 次尝试完成")
+            # time.sleep(1.0)
+            import pdb; pdb.set_trace()  
 
         while True:
             time.sleep(1.0)
