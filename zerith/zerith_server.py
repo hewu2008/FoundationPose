@@ -305,6 +305,11 @@ class ZerithServer:
             # missing angle instead of failing the whole registration.
             logging.warning("Blue +Z plane angle unavailable: %s", angle_error)
             blue_angle = None
+        if category_id == 'cat5' and blue_angle is not None:
+            # The L-shaped elbow pipe is expected to stay near its nominal
+            # upright orientation, so clamp gross outliers of the reported
+            # angle to [-15, 15] degrees.
+            blue_angle = float(np.clip(blue_angle, -45.0, 45.0))
         return {
             'status': 'success',
             'pose': pose,
