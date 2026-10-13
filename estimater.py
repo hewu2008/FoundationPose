@@ -208,6 +208,27 @@ class FoundationPose:
       pose[:3,3] = self.guess_translation(depth=depth, mask=ob_mask, K=K)
       return pose
 
+    # Keep only this instance's pixels in the observed inputs. Everything
+    # outside ob_mask is zeroed in RGB, depth and xyz_map before the crop is
+    # taken, so the crop window (which is derived from the mesh pose and can
+    # be wider than the object) cannot match a neighbouring same-class
+    # instance that falls inside the same window.
+    mask_tensor = torch.as_tensor(
+      (np.asarray(ob_mask) > 0), dtype=torch.float, device='cuda'
+    )
+    rgb_tensor = (
+      torch.as_tensor(rgb_tensor, dtype=torch.float, device='cuda')
+      * mask_tensor[..., None]
+    )
+    depth_tensor = (
+      torch.as_tensor(depth_tensor, dtype=torch.float, device='cuda')
+      * mask_tensor
+    )
+    xyz_map_tensor = (
+      torch.as_tensor(xyz_map_tensor, dtype=torch.float, device='cuda')
+      * mask_tensor[..., None]
+    )
+
     if self.debug>=2:
       imageio.imwrite(f'{self.debug_dir}/color.png', rgb)
       cv2.imwrite(f'{self.debug_dir}/depth.png', (depth*1000).astype(np.uint16))
