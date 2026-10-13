@@ -13,7 +13,7 @@ mkdir -p "runtime"
 
 python zerith/zerith_server_main.py \
     --yolo_weights assets/best.pt \
-    --yolo_confidence 0.7 \
+    --yolo_confidence 0.8 \
     --yolo_iou 0.7 \
     --parts_config "zerith/parts_config.json" \
     --debug_dir "$DEBUG_DIR" \
