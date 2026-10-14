@@ -15,36 +15,52 @@ from zerith.zerith_mesh_utils import blue_z_plane_angle_deg
 from zerith.mask_angle_match import (
     build_visualization,
     load_binary_mask,
-    predict_angle,
+    predict_angle_multi_ref,
     to_undirected_angle,
 )
 
-# 0-degree reference mask for the elbow-pipe (cat5) in-plane angle estimate.
+# 0-degree reference masks for the elbow-pipe (cat5) in-plane angle estimate.
+# The flipped reference covers the part being turned over, whose projected
+# silhouette is mirrored.
 CAT5_REF_MASK_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     'assets', 'imgs', 'zero.png',
 )
-_cat5_ref_mask = None
+CAT5_REF_FLIP_MASK_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'assets', 'imgs', 'zero_flip.png',
+)
+_CAT5_REF_TITLES = ('reference 0deg', 'reference flip')
+_cat5_ref_masks = None
 
 
 def cat5_mask_angle_deg(ob_mask):
     """Estimate the elbow pipe's in-plane angle from its segmentation mask.
 
     The pose-derived +Z axis is unreliable for the L-shaped elbow pipe, so the
-    angle is read directly from the mask: match it against the 0-degree
-    reference with ``predict_angle`` and fold the result with
-    ``to_undirected_angle``.  The returned convention matches
-    ``blue_z_plane_angle_deg`` (clockwise-positive, ``[-90, 90]``).
+    angle is read directly from the mask.  Because the part can be flipped over
+    (its projected silhouette is then mirrored), the mask is matched against
+    both the nominal 0-degree reference and its flipped counterpart, and the
+    higher-IoU match wins.  The result is folded with ``to_undirected_angle`` so
+    the convention matches ``blue_z_plane_angle_deg`` (clockwise-positive,
+    ``[-90, 90]``).
 
-    Returns ``(angle_deg, iou, visualization)``; ``visualization`` is the
-    three-panel match figure so callers can persist it for debugging.
+    Returns ``(angle_deg, iou, ref_title, visualization)``; ``ref_title`` names
+    the winning reference and ``visualization`` is the three-panel match figure
+    so callers can persist it for debugging.
     """
-    global _cat5_ref_mask
-    if _cat5_ref_mask is None:
-        _cat5_ref_mask = load_binary_mask(CAT5_REF_MASK_PATH)
-    cv2_angle, iou, _, _ = predict_angle(ob_mask, _cat5_ref_mask)
-    figure = build_visualization(ob_mask, _cat5_ref_mask, cv2_angle, iou)
-    return to_undirected_angle(cv2_angle), iou, figure
+    global _cat5_ref_masks
+    if _cat5_ref_masks is None:
+        _cat5_ref_masks = [
+            load_binary_mask(CAT5_REF_MASK_PATH),
+            load_binary_mask(CAT5_REF_FLIP_MASK_PATH),
+        ]
+    cv2_angle, iou, ref_index, _, _ = predict_angle_multi_ref(ob_mask, _cat5_ref_masks)
+    ref_title = _CAT5_REF_TITLES[ref_index]
+    figure = build_visualization(
+        ob_mask, _cat5_ref_masks[ref_index], cv2_angle, iou, ref_title=ref_title
+    )
+    return to_undirected_angle(cv2_angle), iou, ref_title, figure
 
 
 class ZerithServer:
@@ -344,9 +360,12 @@ class ZerithServer:
             # pipe, so read the in-plane angle directly from the segmentation
             # mask instead of clamping the pose angle.
             try:
-                blue_angle, mask_angle_iou, mask_angle_figure = cat5_mask_angle_deg(
-                    ob_mask
-                )
+                (
+                    blue_angle,
+                    mask_angle_iou,
+                    mask_angle_ref,
+                    mask_angle_figure,
+                ) = cat5_mask_angle_deg(ob_mask)
             except (ValueError, FileNotFoundError) as angle_error:
                 logging.warning(
                     "EVENT=CAT5_MASK_ANGLE_FAILED error=%s", angle_error
@@ -358,11 +377,12 @@ class ZerithServer:
                 mask_angle_saved = cv2.imwrite(mask_angle_path, mask_angle_figure)
                 logging.info(
                     "EVENT=CAT5_MASK_ANGLE category=%s debug_index=%d "
-                    "angle=%.1f iou=%.3f path=%s saved=%s",
+                    "angle=%.1f iou=%.3f ref=%s path=%s saved=%s",
                     category_id,
                     index,
                     blue_angle,
                     mask_angle_iou,
+                    mask_angle_ref,
                     mask_angle_path,
                     mask_angle_saved,
                 )

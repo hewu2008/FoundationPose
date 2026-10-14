@@ -13,15 +13,22 @@ Pipeline (as specified):
   4. render a side-by-side visualization of the reference, the query, the best
      rotated overlay and the predicted angle.
 
+A single reference cannot describe a part that has been flipped over, whose
+projected silhouette is mirrored.  Two references are therefore searched: the
+nominal 0-degree mask and its flipped counterpart, and the match with the
+highest IoU wins.
+
 Angle convention: the returned ``angle_deg`` is the rotation applied to the
-reference mask, in the ``cv2.getRotationMatrix2D`` convention (positive is
-counter-clockwise on screen).  0 degrees means "same orientation as the
-reference mask" (``/home/jszn/hewu/imgs/zero.png``).
+winning reference mask, in the ``cv2.getRotationMatrix2D`` convention (positive
+is counter-clockwise on screen).  0 degrees means "same orientation as the
+reference mask" (``assets/imgs/zero.png``; the flipped match uses
+``assets/imgs/zero_flip.png``).
 
 Usage:
     python zerith/mask_angle_match.py \
         --query runtime/debug_zerith_server/mask/1.png \
-        --ref /home/jszn/hewu/imgs/zero.png \
+        --ref assets/imgs/zero.png \
+        --ref_flip assets/imgs/zero_flip.png \
         --out_dir runtime/mask_angle
 """
 
@@ -33,7 +40,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-DEFAULT_REF = "assets/zero.png"
+DEFAULT_REF = "assets/imgs/zero.png"
+DEFAULT_REF_FLIP = "assets/imgs/zero_flip.png"
 DEFAULT_OUT_DIR = "runtime/mask_angle"
 
 CANVAS = 256
@@ -147,6 +155,41 @@ def predict_angle(
     return float(angles[best] % 360.0), float(ious[best]), angles, ious
 
 
+def predict_angle_multi_ref(
+    query_mask: np.ndarray,
+    ref_masks,
+    step_deg: float = STEP_DEG,
+    angle_range=(0.0, 360.0),
+    canvas: int = CANVAS,
+    target_area: float = TARGET_AREA,
+):
+    """Search every reference and return the best match.
+
+    Handles flipped parts by trying the nominal reference and its flipped
+    counterpart (e.g. ``zero.png`` and ``zero_flip.png``): the query is matched
+    against each reference independently and the highest IoU wins.
+
+    Returns ``(angle_deg, best_iou, ref_index, angles, ious)`` where
+    ``ref_index`` selects the winning entry of ``ref_masks`` and
+    ``angles``/``ious`` are that reference's search curve.
+    """
+    best = None
+    for ref_index, ref_mask in enumerate(ref_masks):
+        angle, iou, angles, ious = predict_angle(
+            query_mask,
+            ref_mask,
+            step_deg=step_deg,
+            angle_range=angle_range,
+            canvas=canvas,
+            target_area=target_area,
+        )
+        if best is None or iou > best[1]:
+            best = (angle, iou, ref_index, angles, ious)
+    if best is None:
+        raise ValueError("No reference masks provided")
+    return best
+
+
 def to_signed_angle(angle_deg: float) -> float:
     """Convert a cv2 rotation angle to the clockwise-positive signed range.
 
@@ -223,14 +266,17 @@ def build_visualization(
     iou: float,
     canvas: int = CANVAS,
     target_area: float = TARGET_AREA,
+    ref_title: str = "reference 0deg",
 ) -> np.ndarray:
     """Three-panel figure: reference (0 deg), query, and the best overlay.
 
-    ``angle_deg`` stays the cv2 (counter-clockwise-positive) rotation applied to
-    the reference so the overlay is geometrically correct.  Both printed
-    readings use the clockwise-positive convention: ``angle`` is the signed,
-    directed angle from :func:`to_signed_angle`, and ``line`` is the same
-    orientation folded onto an undirected line by :func:`to_undirected_angle`.
+    ``ref_mask`` must be the reference that actually won (nominal or flipped);
+    ``ref_title`` labels it in the figure.  ``angle_deg`` stays the cv2
+    (counter-clockwise-positive) rotation applied to that reference so the
+    overlay is geometrically correct.  Both printed readings use the
+    clockwise-positive convention: ``angle`` is the signed, directed angle from
+    :func:`to_signed_angle`, and ``line`` is the same orientation folded onto an
+    undirected line by :func:`to_undirected_angle`.
     """
     query = normalize_mask(query_mask, canvas=canvas, target_area=target_area)
     ref = normalize_mask(ref_mask, canvas=canvas, target_area=target_area)
@@ -241,7 +287,7 @@ def build_visualization(
     # rotate the reference long axis exactly like the mask was rotated
     predicted_axis = _rotation_matrix(angle_deg, canvas=canvas)[:, :2] @ ref_axis
 
-    p_ref = _panel(ref, "reference 0deg", ref_axis)
+    p_ref = _panel(ref, ref_title, ref_axis)
     p_query = _panel(query, "query", query_axis)
 
     overlay = np.zeros((canvas, canvas, 3), dtype=np.uint8)
@@ -285,22 +331,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query", required=True, help="mask image file or a directory of masks")
     parser.add_argument("--ref", default=DEFAULT_REF, help="0-degree reference mask image")
+    parser.add_argument("--ref_flip", default=DEFAULT_REF_FLIP, help="flipped reference mask image")
     parser.add_argument("--out_dir", default=DEFAULT_OUT_DIR, help="directory for visualized results")
     parser.add_argument("--step_deg", type=float, default=STEP_DEG, help="rotation search step in degrees")
     parser.add_argument("--canvas", type=int, default=CANVAS, help="square canvas size after normalization")
     parser.add_argument("--target_area", type=float, default=TARGET_AREA, help="fixed foreground area in pixels after normalization")
     args = parser.parse_args()
 
-    ref_mask = load_binary_mask(Path(args.ref))
+    ref_masks = [load_binary_mask(Path(args.ref)), load_binary_mask(Path(args.ref_flip))]
+    ref_titles = ["reference 0deg", "reference flip"]
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     lines = []
     for query_path in _collect_queries(Path(args.query)):
         query_mask = load_binary_mask(query_path)
-        angle, iou, _, _ = predict_angle(
+        angle, iou, ref_index, _, _ = predict_angle_multi_ref(
             query_mask,
-            ref_mask,
+            ref_masks,
             step_deg=args.step_deg,
             canvas=args.canvas,
             target_area=args.target_area,
@@ -309,11 +357,20 @@ def main() -> None:
         # overlay; the reported value is re-expressed clockwise-positive.
         angle_signed = to_signed_angle(angle)
         figure = build_visualization(
-            query_mask, ref_mask, angle, iou, canvas=args.canvas, target_area=args.target_area
+            query_mask,
+            ref_masks[ref_index],
+            angle,
+            iou,
+            canvas=args.canvas,
+            target_area=args.target_area,
+            ref_title=ref_titles[ref_index],
         )
         out_path = out_dir / f"{query_path.stem}_angle.png"
         cv2.imwrite(str(out_path), figure)
-        line = f"{query_path.name}: angle={angle_signed:.1f} deg  IoU={iou:.3f}  -> {out_path}"
+        line = (
+            f"{query_path.name}: angle={angle_signed:.1f} deg  IoU={iou:.3f}  "
+            f"ref={ref_titles[ref_index]}  -> {out_path}"
+        )
         print(line)
         lines.append(line)
 
