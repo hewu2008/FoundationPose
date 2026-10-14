@@ -33,7 +33,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-DEFAULT_REF = "/home/jszn/hewu/imgs/zero.png"
+DEFAULT_REF = "assets/zero.png"
 DEFAULT_OUT_DIR = "runtime/mask_angle"
 
 CANVAS = 256
