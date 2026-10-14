@@ -147,6 +147,20 @@ def predict_angle(
     return float(angles[best] % 360.0), float(ious[best]), angles, ious
 
 
+def to_signed_angle(angle_deg: float) -> float:
+    """Convert a rotation angle to the signed range [-180, 180).
+
+    ``predict_angle`` returns the angle in ``[0, 360)`` following the
+    ``cv2.getRotationMatrix2D`` convention (positive is counter-clockwise on
+    screen).  This maps it into ``[-180, 180)`` while keeping that convention,
+    so the sign is explicit: counter-clockwise is positive, clockwise is
+    negative.
+
+    Examples: ``270 -> -90``, ``200 -> -160``, ``90 -> 90``, ``180 -> -180``.
+    """
+    return (float(angle_deg) + 180.0) % 360.0 - 180.0
+
+
 def _axis_vector(mask: np.ndarray) -> np.ndarray:
     """Unit vector of the mask's principal (longest) axis, in image coordinates."""
     ys, xs = np.nonzero(mask)
@@ -254,6 +268,7 @@ def main() -> None:
             canvas=args.canvas,
             target_area=args.target_area,
         )
+        angle = to_signed_angle(angle)
         figure = build_visualization(
             query_mask, ref_mask, angle, iou, canvas=args.canvas, target_area=args.target_area
         )
