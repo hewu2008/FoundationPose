@@ -12,6 +12,39 @@ from io import BytesIO
 from PIL import Image, ImageDraw
 import numpy as np
 from zerith.zerith_mesh_utils import blue_z_plane_angle_deg
+from zerith.mask_angle_match import (
+    build_visualization,
+    load_binary_mask,
+    predict_angle,
+    to_undirected_angle,
+)
+
+# 0-degree reference mask for the elbow-pipe (cat5) in-plane angle estimate.
+CAT5_REF_MASK_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'assets', 'imgs', 'zero.png',
+)
+_cat5_ref_mask = None
+
+
+def cat5_mask_angle_deg(ob_mask):
+    """Estimate the elbow pipe's in-plane angle from its segmentation mask.
+
+    The pose-derived +Z axis is unreliable for the L-shaped elbow pipe, so the
+    angle is read directly from the mask: match it against the 0-degree
+    reference with ``predict_angle`` and fold the result with
+    ``to_undirected_angle``.  The returned convention matches
+    ``blue_z_plane_angle_deg`` (clockwise-positive, ``[-90, 90]``).
+
+    Returns ``(angle_deg, iou, visualization)``; ``visualization`` is the
+    three-panel match figure so callers can persist it for debugging.
+    """
+    global _cat5_ref_mask
+    if _cat5_ref_mask is None:
+        _cat5_ref_mask = load_binary_mask(CAT5_REF_MASK_PATH)
+    cv2_angle, iou, _, _ = predict_angle(ob_mask, _cat5_ref_mask)
+    figure = build_visualization(ob_mask, _cat5_ref_mask, cv2_angle, iou)
+    return to_undirected_angle(cv2_angle), iou, figure
 
 
 class ZerithServer:
@@ -31,6 +64,7 @@ class ZerithServer:
         os.makedirs(os.path.join(save_dir, 'mask_overlay'), exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'ob_in_cam'), exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'detections'), exist_ok=True)
+        os.makedirs(os.path.join(save_dir, 'mask_angle'), exist_ok=True)
     
     def _handle_ping(self, request):
         logging.debug("Received ping command")
@@ -305,11 +339,33 @@ class ZerithServer:
             # missing angle instead of failing the whole registration.
             logging.warning("Blue +Z plane angle unavailable: %s", angle_error)
             blue_angle = None
-        if category_id == 'cat5' and blue_angle is not None:
-            # The L-shaped elbow pipe is expected to stay near its nominal
-            # upright orientation, so clamp gross outliers of the reported
-            # angle to [-15, 15] degrees.
-            blue_angle = float(np.clip(blue_angle, -45.0, 45.0))
+        if category_id == 'cat5':
+            # The pose-derived +Z axis is unreliable for the L-shaped elbow
+            # pipe, so read the in-plane angle directly from the segmentation
+            # mask instead of clamping the pose angle.
+            try:
+                blue_angle, mask_angle_iou, mask_angle_figure = cat5_mask_angle_deg(
+                    ob_mask
+                )
+            except (ValueError, FileNotFoundError) as angle_error:
+                logging.warning(
+                    "EVENT=CAT5_MASK_ANGLE_FAILED error=%s", angle_error
+                )
+            else:
+                mask_angle_path = os.path.join(
+                    self.save_dir, 'mask_angle', f'{index}.png'
+                )
+                mask_angle_saved = cv2.imwrite(mask_angle_path, mask_angle_figure)
+                logging.info(
+                    "EVENT=CAT5_MASK_ANGLE category=%s debug_index=%d "
+                    "angle=%.1f iou=%.3f path=%s saved=%s",
+                    category_id,
+                    index,
+                    blue_angle,
+                    mask_angle_iou,
+                    mask_angle_path,
+                    mask_angle_saved,
+                )
         return {
             'status': 'success',
             'pose': pose,
