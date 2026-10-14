@@ -148,30 +148,30 @@ def predict_angle(
 
 
 def to_signed_angle(angle_deg: float) -> float:
-    """Convert a rotation angle to the signed range [-180, 180).
+    """Convert a cv2 rotation angle to the clockwise-positive signed range.
 
     ``predict_angle`` returns the angle in ``[0, 360)`` following the
     ``cv2.getRotationMatrix2D`` convention (positive is counter-clockwise on
-    screen).  This maps it into ``[-180, 180)`` while keeping that convention,
-    so the sign is explicit: counter-clockwise is positive, clockwise is
-    negative.
+    screen).  This re-expresses it in the convention used by
+    ``zerith_mesh_utils.blue_z_plane_angle_deg``: clockwise is positive and
+    counter-clockwise is negative, mapped into ``[-180, 180)``.
 
-    Examples: ``270 -> -90``, ``200 -> -160``, ``90 -> 90``, ``180 -> -180``.
+    Examples: ``90 -> -90``, ``270 -> 90``, ``200 -> 160``, ``180 -> -180``.
     """
-    return (float(angle_deg) + 180.0) % 360.0 - 180.0
+    return (180.0 - float(angle_deg)) % 360.0 - 180.0
 
 
 def to_undirected_angle(angle_deg: float) -> float:
-    """Fold an angle onto the undirected-line range ``[-90, 90]``.
+    """Fold a cv2 rotation angle onto the undirected-line range ``[-90, 90]``.
 
     A line has no direction: the angles ``a`` and ``a + 180`` describe exactly
     the same undirected line, matching the folding used by
     ``zerith_mesh_utils.blue_z_plane_angle_deg``.  :func:`to_signed_angle` is
-    applied first so any input angle is accepted, then values above 90 degrees
-    have 180 degrees subtracted and values below -90 degrees have 180 degrees
-    added, giving a unique representative in ``[-90, 90]``.
+    applied first, so the result is also clockwise-positive; values above 90
+    degrees have 180 degrees subtracted and values below -90 degrees have 180
+    degrees added, giving a unique representative in ``[-90, 90]``.
 
-    Examples: ``100 -> -80``, ``-100 -> 80``, ``180 -> 0``, ``270 -> -90``.
+    Examples: ``100 -> 80``, ``-100 -> -80``, ``180 -> 0``, ``270 -> 90``.
     """
     angle = to_signed_angle(angle_deg)
     if angle > 90.0:
@@ -226,9 +226,11 @@ def build_visualization(
 ) -> np.ndarray:
     """Three-panel figure: reference (0 deg), query, and the best overlay.
 
-    The overlay prints both angle readings: ``angle`` is the signed, directed
-    angle from :func:`to_signed_angle`, and ``line`` is the same orientation
-    folded onto an undirected line by :func:`to_undirected_angle`.
+    ``angle_deg`` stays the cv2 (counter-clockwise-positive) rotation applied to
+    the reference so the overlay is geometrically correct.  Both printed
+    readings use the clockwise-positive convention: ``angle`` is the signed,
+    directed angle from :func:`to_signed_angle`, and ``line`` is the same
+    orientation folded onto an undirected line by :func:`to_undirected_angle`.
     """
     query = normalize_mask(query_mask, canvas=canvas, target_area=target_area)
     ref = normalize_mask(ref_mask, canvas=canvas, target_area=target_area)
@@ -250,7 +252,7 @@ def build_visualization(
     _draw_axis(overlay, predicted_axis, (0, 200, 255))
     cv2.putText(
         overlay,
-        f"angle={angle_deg:.1f}deg  IoU={iou:.3f}",
+        f"angle={to_signed_angle(angle_deg):.1f}deg  IoU={iou:.3f}",
         (6, 18),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.46,
@@ -303,13 +305,15 @@ def main() -> None:
             canvas=args.canvas,
             target_area=args.target_area,
         )
-        angle = to_signed_angle(angle)
+        # ``angle`` stays the cv2 (counter-clockwise) rotation used to build the
+        # overlay; the reported value is re-expressed clockwise-positive.
+        angle_signed = to_signed_angle(angle)
         figure = build_visualization(
             query_mask, ref_mask, angle, iou, canvas=args.canvas, target_area=args.target_area
         )
         out_path = out_dir / f"{query_path.stem}_angle.png"
         cv2.imwrite(str(out_path), figure)
-        line = f"{query_path.name}: angle={angle:.1f} deg  IoU={iou:.3f}  -> {out_path}"
+        line = f"{query_path.name}: angle={angle_signed:.1f} deg  IoU={iou:.3f}  -> {out_path}"
         print(line)
         lines.append(line)
 
