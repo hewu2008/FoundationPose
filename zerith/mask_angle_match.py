@@ -161,6 +161,26 @@ def to_signed_angle(angle_deg: float) -> float:
     return (float(angle_deg) + 180.0) % 360.0 - 180.0
 
 
+def to_undirected_angle(angle_deg: float) -> float:
+    """Fold an angle onto the undirected-line range ``[-90, 90]``.
+
+    A line has no direction: the angles ``a`` and ``a + 180`` describe exactly
+    the same undirected line, matching the folding used by
+    ``zerith_mesh_utils.blue_z_plane_angle_deg``.  :func:`to_signed_angle` is
+    applied first so any input angle is accepted, then values above 90 degrees
+    have 180 degrees subtracted and values below -90 degrees have 180 degrees
+    added, giving a unique representative in ``[-90, 90]``.
+
+    Examples: ``100 -> -80``, ``-100 -> 80``, ``180 -> 0``, ``270 -> -90``.
+    """
+    angle = to_signed_angle(angle_deg)
+    if angle > 90.0:
+        angle -= 180.0
+    elif angle < -90.0:
+        angle += 180.0
+    return angle
+
+
 def _axis_vector(mask: np.ndarray) -> np.ndarray:
     """Unit vector of the mask's principal (longest) axis, in image coordinates."""
     ys, xs = np.nonzero(mask)
@@ -204,7 +224,12 @@ def build_visualization(
     canvas: int = CANVAS,
     target_area: float = TARGET_AREA,
 ) -> np.ndarray:
-    """Three-panel figure: reference (0 deg), query, and the best overlay."""
+    """Three-panel figure: reference (0 deg), query, and the best overlay.
+
+    The overlay prints both angle readings: ``angle`` is the signed, directed
+    angle from :func:`to_signed_angle`, and ``line`` is the same orientation
+    folded onto an undirected line by :func:`to_undirected_angle`.
+    """
     query = normalize_mask(query_mask, canvas=canvas, target_area=target_area)
     ref = normalize_mask(ref_mask, canvas=canvas, target_area=target_area)
     rotated = rotate_mask(ref, angle_deg, canvas=canvas)
@@ -227,6 +252,16 @@ def build_visualization(
         overlay,
         f"angle={angle_deg:.1f}deg  IoU={iou:.3f}",
         (6, 18),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.46,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        overlay,
+        f"line={to_undirected_angle(angle_deg):.1f}deg",
+        (6, 34),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.46,
         (255, 255, 255),
