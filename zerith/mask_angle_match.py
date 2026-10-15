@@ -36,6 +36,7 @@ Usage:
         --ref_flip assets/imgs/zero_flip.png \
         --ref_center assets/imgs/zero.txt \
         --ref_flip_center assets/imgs/zero_flip.txt \
+        --ref_depth assets/imgs/zerith_ref_depth.npy \
         --out_dir runtime/mask_angle
 """
 
@@ -51,11 +52,28 @@ DEFAULT_REF = "assets/imgs/zero.png"
 DEFAULT_REF_FLIP = "assets/imgs/zero_flip.png"
 DEFAULT_REF_CENTER = "assets/imgs/zero.txt"
 DEFAULT_REF_FLIP_CENTER = "assets/imgs/zero_flip.txt"
+DEFAULT_REF_DEPTH = "assets/imgs/zerith_ref_depth.npy"
 DEFAULT_OUT_DIR = "runtime/mask_angle"
+
+# Intrinsics of the reference capture (aligned color/depth of ``rs/cam_high``),
+# the same K used across the pipeline (e.g. scripts/zerith_foundation_pose_server.py).
+DEFAULT_REF_K = np.array(
+    [
+        [607.62, 0.0, 329.68],
+        [0.0, 608.40, 243.36],
+        [0.0, 0.0, 1.0],
+    ],
+    dtype=np.float64,
+)
 
 CANVAS = 256
 TARGET_AREA = 12000.0  # fixed foreground area in pixels after normalization
 STEP_DEG = 5.0
+
+# Side of the square of pixels read around the center point.  A single pixel is
+# fragile: when it lands on a depth hole the point is lost, and a lone reading is
+# noisy.  A small odd window takes the median of the valid readings instead.
+DEPTH_WINDOW = 5
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
@@ -257,6 +275,67 @@ def predict_center_point(
     return _foreground_centroid(query_mask) + offset
 
 
+def load_depth_map(path) -> np.ndarray:
+    """Load a float depth map in meters (``assets/imgs/zerith_ref_depth.npy``)."""
+    depth = np.load(str(path)).astype(np.float64)
+    if depth.ndim != 2:
+        raise ValueError(f"Depth map must be a single 2D image: {path}")
+    return depth
+
+
+def depth2xyz(
+    depth: np.ndarray, uv, K: np.ndarray = DEFAULT_REF_K, window: int = DEPTH_WINDOW
+) -> np.ndarray:
+    """Back-project one depth pixel ``uv = (u, v)`` into camera XYZ, in meters.
+
+    ``K`` is the 3x3 pinhole intrinsics of the depth frame.  The pixel is rounded
+    the same way ``FoundationPose.Utils.depth2xyzmap`` rounds it.
+
+    ``window`` selects a ``window x window`` square centred on that pixel and the
+    depth used is the median of its readings; a reading below 1 mm -- the invalid
+    marker used by ``depth2xyzmap`` -- is dropped, so a hole under the centre is
+    filled by its neighbours.  ``window=1`` reads the single pixel and returns
+    ``NaN`` for an invalid reading; a window with no valid reading at all also
+    returns ``NaN``.
+    """
+    u, v = int(round(float(uv[0]))), int(round(float(uv[1])))
+    if not (0 <= u < depth.shape[1] and 0 <= v < depth.shape[0]):
+        raise ValueError(f"uv {(u, v)} is outside the depth map of shape {depth.shape}")
+    half = max(int(window), 1) // 2
+    patch = depth[max(0, v - half):v + half + 1, max(0, u - half):u + half + 1]
+    valid = patch[patch >= 0.001]
+    if valid.size == 0:
+        return np.full(3, np.nan, dtype=np.float64)
+    z = float(np.median(valid))
+    return np.array([(u - K[0, 2]) * z / K[0, 0], (v - K[1, 2]) * z / K[1, 1], z])
+
+
+def predict_center_xyz(
+    query_mask: np.ndarray,
+    ref_mask: np.ndarray,
+    ref_center,
+    angle_deg: float,
+    ref_depth: np.ndarray,
+    K: np.ndarray = DEFAULT_REF_K,
+    window: int = DEPTH_WINDOW,
+) -> np.ndarray:
+    """Return the query center point as camera XYZ, in meters.
+
+    The query center from :func:`predict_center_point` is taken *directly* as the
+    ``uv`` of the reference depth map, then back-projected by
+    :func:`depth2xyz`.  That assumes the two masks share one camera view, i.e.
+    the query pixel coordinates live in the reference frame; if the query was
+    captured from another pose the point needs a pose/homography transform
+    first.
+
+    Returns ``np.array([X, Y, Z])`` with X right, Y down and Z along the optical
+    axis, in the reference camera frame.  It is ``NaN`` only when no depth
+    reading around the center pixel is valid (hole or occluded).
+    """
+    center = predict_center_point(query_mask, ref_mask, ref_center, angle_deg)
+    return depth2xyz(ref_depth, center, K, window=window)
+
+
 def to_signed_angle(angle_deg: float) -> float:
     """Convert a cv2 rotation angle to the clockwise-positive signed range.
 
@@ -351,6 +430,7 @@ def build_visualization(
     target_area: float = TARGET_AREA,
     ref_title: str = "reference 0deg",
     center=None,
+    xyz=None,
 ) -> np.ndarray:
     """Three-panel figure: reference (0 deg), query, and the best overlay.
 
@@ -422,6 +502,17 @@ def build_visualization(
             1,
             cv2.LINE_AA,
         )
+    if xyz is not None:
+        cv2.putText(
+            overlay,
+            f"xyz=({xyz[0]:.3f}, {xyz[1]:.3f}, {xyz[2]:.3f})m",
+            (6, 66),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.46,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
 
     pad = np.full((canvas, 8, 3), 40, dtype=np.uint8)
     return np.hstack([p_ref, pad, p_query, pad, overlay])
@@ -440,6 +531,12 @@ def main() -> None:
     parser.add_argument("--ref_flip", default=DEFAULT_REF_FLIP, help="flipped reference mask image")
     parser.add_argument("--ref_center", default=DEFAULT_REF_CENTER, help="center-point file for --ref ('x y' in reference pixels)")
     parser.add_argument("--ref_flip_center", default=DEFAULT_REF_FLIP_CENTER, help="center-point file for --ref_flip")
+    parser.add_argument("--ref_depth", default=DEFAULT_REF_DEPTH, help="reference depth map (.npy, meters) for the center point's XYZ")
+    parser.add_argument("--fx", type=float, default=DEFAULT_REF_K[0, 0], help="reference depth intrinsics focal length fx")
+    parser.add_argument("--fy", type=float, default=DEFAULT_REF_K[1, 1], help="reference depth intrinsics focal length fy")
+    parser.add_argument("--cx", type=float, default=DEFAULT_REF_K[0, 2], help="reference depth intrinsics principal point cx")
+    parser.add_argument("--cy", type=float, default=DEFAULT_REF_K[1, 2], help="reference depth intrinsics principal point cy")
+    parser.add_argument("--depth_window", type=int, default=DEPTH_WINDOW, help="side of the pixel window around the center point used for the depth median")
     parser.add_argument("--out_dir", default=DEFAULT_OUT_DIR, help="directory for visualized results")
     parser.add_argument("--step_deg", type=float, default=STEP_DEG, help="rotation search step in degrees")
     parser.add_argument("--canvas", type=int, default=CANVAS, help="square canvas size after normalization")
@@ -449,6 +546,8 @@ def main() -> None:
     ref_masks = [load_binary_mask(Path(args.ref)), load_binary_mask(Path(args.ref_flip))]
     ref_centers = [load_center_point(Path(args.ref_center)), load_center_point(Path(args.ref_flip_center))]
     ref_titles = ["reference 0deg", "reference flip"]
+    ref_depth = load_depth_map(Path(args.ref_depth))
+    K = np.array([[args.fx, 0.0, args.cx], [0.0, args.fy, args.cy], [0.0, 0.0, 1.0]])
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -464,6 +563,8 @@ def main() -> None:
         )
         # the winning reference carries both the rotation and its own anchor point
         center = predict_center_point(query_mask, ref_masks[ref_index], ref_centers[ref_index], angle)
+        # the center pixel is read straight off the reference depth map
+        xyz = depth2xyz(ref_depth, center, K, window=args.depth_window)
         # ``angle`` stays the cv2 (counter-clockwise) rotation used to build the
         # overlay; the reported value is re-expressed clockwise-positive.
         angle_signed = to_signed_angle(angle)
@@ -476,12 +577,14 @@ def main() -> None:
             target_area=args.target_area,
             ref_title=ref_titles[ref_index],
             center=center,
+            xyz=xyz,
         )
         out_path = out_dir / f"{query_path.stem}_angle.png"
         cv2.imwrite(str(out_path), figure)
         line = (
             f"{query_path.name}: angle={angle_signed:.1f} deg  IoU={iou:.3f}  "
             f"center=({center[0]:.1f}, {center[1]:.1f})  "
+            f"xyz=({xyz[0]:.3f}, {xyz[1]:.3f}, {xyz[2]:.3f})m  "
             f"ref={ref_titles[ref_index]}  -> {out_path}"
         )
         print(line)

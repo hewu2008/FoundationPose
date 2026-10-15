@@ -10,6 +10,12 @@ REF="${REF:-$ROOT/assets/imgs/zero.png}"
 REF_FLIP="${REF_FLIP:-$ROOT/assets/imgs/zero_flip.png}"
 REF_CENTER="${REF_CENTER:-$ROOT/assets/imgs/zero.txt}"
 REF_FLIP_CENTER="${REF_FLIP_CENTER:-$ROOT/assets/imgs/zero_flip.txt}"
+REF_DEPTH="${REF_DEPTH:-$ROOT/assets/imgs/zerith_ref_depth.npy}"
+FX="${FX:-607.62}"
+FY="${FY:-608.40}"
+CX="${CX:-329.68}"
+CY="${CY:-243.36}"
+DEPTH_WINDOW="${DEPTH_WINDOW:-5}"
 OUT_DIR="${OUT_DIR:-$ROOT/runtime/mask_angle}"
 STEP_DEG="${STEP_DEG:-5.0}"
 CANVAS="${CANVAS:-256}"
@@ -22,6 +28,9 @@ echo " Ref:        $REF"
 echo " Ref flip:   $REF_FLIP"
 echo " Ref center: $REF_CENTER"
 echo " Flip center:$REF_FLIP_CENTER"
+echo " Ref depth:  $REF_DEPTH"
+echo " K:          fx=$FX fy=$FY cx=$CX cy=$CY"
+echo " Depth win:  $DEPTH_WINDOW"
 echo " Out dir:    $OUT_DIR"
 echo " Step(deg):  $STEP_DEG"
 echo " Canvas:     $CANVAS"
@@ -34,6 +43,12 @@ python zerith/mask_angle_match.py \
   --ref_flip "$REF_FLIP" \
   --ref_center "$REF_CENTER" \
   --ref_flip_center "$REF_FLIP_CENTER" \
+  --ref_depth "$REF_DEPTH" \
+  --fx "$FX" \
+  --fy "$FY" \
+  --cx "$CX" \
+  --cy "$CY" \
+  --depth_window "$DEPTH_WINDOW" \
   --out_dir "$OUT_DIR" \
   --step_deg "$STEP_DEG" \
   --canvas "$CANVAS" \
