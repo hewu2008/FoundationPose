@@ -448,6 +448,9 @@ class ZerithServer:
                 # Only a valid reading (no depth hole under the anchor) is
                 # allowed to touch the pose.
                 if np.isfinite(mask_xyz).all():
+                    # keep the pre-update pose so the cad image can still show
+                    # the origin FoundationPose had found
+                    foundation_pose = pose_array.copy()
                     pose_array[:3, 3] = mask_xyz
                     if torch.is_tensor(pose):
                         pose = pose.detach().clone()
@@ -457,9 +460,21 @@ class ZerithServer:
                     else:
                         pose = pose_array
                     np.savetxt(pose_path, pose_array)
+                    # redraw the cad origin image of this frame with the mask
+                    # point added, so the corrected XYZ can be eyeballed
+                    # against the FoundationPose origin
+                    cad_origin_path = self._save_cad_origin_visualization(
+                        index,
+                        rgb,
+                        K,
+                        foundation_pose,
+                        category_id,
+                        extra_point=(mask_center, mask_xyz),
+                    )
                     logging.info(
                         "EVENT=CAT5_MASK_XYZ category=%s debug_index=%d "
-                        "center=[%.2f,%.2f] xyz_m=%s pose_path=%s",
+                        "center=[%.2f,%.2f] xyz_m=%s pose_path=%s "
+                        "cad_origin_path=%s",
                         category_id,
                         index,
                         mask_center[0],
@@ -469,6 +484,7 @@ class ZerithServer:
                             separators=(",", ":"),
                         ),
                         pose_path,
+                        cad_origin_path,
                     )
                 else:
                     logging.warning(
@@ -759,11 +775,17 @@ class ZerithServer:
             return None
         return homogeneous[:2] / homogeneous[2]
 
-    def _save_cad_origin_visualization(self, index, rgb, K, pose, category_id):
+    def _save_cad_origin_visualization(
+        self, index, rgb, K, pose, category_id, extra_point=None
+    ):
         """Draw the projected CAD (mesh) origin of the posed part.
 
         ``pose`` maps the original mesh (CAD) frame into the camera frame, so
         ``pose[:3, 3]`` is the CAD origin in camera coordinates.
+
+        ``extra_point`` is an optional ``(uv, xyz_m)`` pair drawn as a green
+        cross with its own label below the blue CAD-origin marker, used to show
+        a mask-derived point next to the pose origin on the same image.
         """
         try:
             pose = np.asarray(pose, dtype=np.float64).reshape(4, 4)
@@ -803,6 +825,40 @@ class ZerithServer:
                 1,
                 cv2.LINE_AA,
             )
+
+            if extra_point is not None:
+                point_uv, point_xyz = extra_point
+                point_x, point_y = (
+                    int(round(float(v))) for v in point_uv
+                )
+                cv2.drawMarker(
+                    canvas, (point_x, point_y), (0, 255, 0), cv2.MARKER_CROSS, 14, 2
+                )
+                point_label = "mask xyz (%.1f, %.1f, %.1f) mm" % tuple(
+                    np.asarray(point_xyz, dtype=np.float64) * 1000.0
+                )
+                (point_w, point_h), _ = cv2.getTextSize(
+                    point_label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1
+                )
+                label_x = min(
+                    max(0, point_x + 8), max(0, canvas.shape[1] - point_w - 8)
+                )
+                # the CAD origin label sits above its marker, so this one goes
+                # below it to keep the two readings apart
+                label_y = min(
+                    max(point_h + 2, point_y + point_h + 14),
+                    canvas.shape[0] - 4,
+                )
+                cv2.putText(
+                    canvas,
+                    point_label,
+                    (label_x, label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (0, 255, 0),
+                    1,
+                    cv2.LINE_AA,
+                )
 
             out_path = os.path.join(
                 self.save_dir, 'cad_origin', f'{index}.png'
