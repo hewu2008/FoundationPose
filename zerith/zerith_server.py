@@ -81,6 +81,7 @@ class ZerithServer:
         os.makedirs(os.path.join(save_dir, 'ob_in_cam'), exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'detections'), exist_ok=True)
         os.makedirs(os.path.join(save_dir, 'mask_angle'), exist_ok=True)
+        os.makedirs(os.path.join(save_dir, 'cad_origin'), exist_ok=True)
     
     def _handle_ping(self, request):
         logging.debug("Received ping command")
@@ -332,6 +333,11 @@ class ZerithServer:
             index,
             pose_path,
             time.perf_counter() - item_started,
+        )
+        # Visualize the projected CAD (mesh) origin of the part before the pose
+        # is returned to the client.
+        self._save_cad_origin_visualization(
+            index, rgb, K, pose_array, category_id
         )
         if isinstance(pose, np.ndarray):
             pose = torch.from_numpy(pose)
@@ -654,6 +660,89 @@ class ZerithServer:
             'status': 'error',
             'message': f'Unknown command: {command}'
         }
+
+    @staticmethod
+    def _project_camera_point(K, point):
+        """Project one camera-space point; ``None`` when it is degenerate."""
+        K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+        point = np.asarray(point, dtype=np.float64).reshape(3)
+        homogeneous = K @ point
+        if homogeneous[2] <= 1e-6:
+            return None
+        return homogeneous[:2] / homogeneous[2]
+
+    def _save_cad_origin_visualization(self, index, rgb, K, pose, category_id):
+        """Draw the projected CAD (mesh) origin of the posed part.
+
+        ``pose`` maps the original mesh (CAD) frame into the camera frame, so
+        ``pose[:3, 3]`` is the CAD origin in camera coordinates.
+        """
+        try:
+            pose = np.asarray(pose, dtype=np.float64).reshape(4, 4)
+            origin_cam = pose[:3, 3]
+            origin_uv = self._project_camera_point(K, origin_cam)
+            if origin_uv is None:
+                logging.warning(
+                    "EVENT=CAD_ORIGIN_SKIPPED category=%s debug_index=%d "
+                    "reason=behind_camera",
+                    category_id,
+                    index,
+                )
+                return None
+
+            canvas = cv2.cvtColor(
+                np.asarray(rgb, dtype=np.uint8), cv2.COLOR_RGB2BGR
+            )
+            x, y = (int(round(v)) for v in origin_uv)
+            cv2.drawMarker(
+                canvas, (x, y), (255, 0, 0), cv2.MARKER_CROSS, 14, 2
+            )
+            label = "CAD origin (%.1f, %.1f, %.1f) mm" % tuple(
+                origin_cam * 1000.0
+            )
+            (text_w, text_h), _ = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1
+            )
+            text_x = min(max(0, x + 8), max(0, canvas.shape[1] - text_w - 8))
+            text_y = min(max(text_h + 2, y - 8), canvas.shape[0] - 4)
+            cv2.putText(
+                canvas,
+                label,
+                (text_x, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 0, 0),
+                1,
+                cv2.LINE_AA,
+            )
+
+            out_path = os.path.join(
+                self.save_dir, 'cad_origin', f'{index}.png'
+            )
+            if not cv2.imwrite(out_path, canvas):
+                raise OSError(f"Failed to write CAD origin image: {out_path}")
+            logging.info(
+                "EVENT=CAD_ORIGIN category=%s debug_index=%d "
+                "origin_cam_m=%s origin_uv=[%.2f,%.2f] path=%s",
+                category_id,
+                index,
+                json.dumps(
+                    [round(float(v), 6) for v in origin_cam],
+                    separators=(",", ":"),
+                ),
+                float(origin_uv[0]),
+                float(origin_uv[1]),
+                out_path,
+            )
+            return out_path
+        except Exception as save_error:
+            logging.warning(
+                "EVENT=CAD_ORIGIN_FAILED category=%s debug_index=%d error=%s",
+                category_id,
+                index,
+                save_error,
+            )
+            return None
 
     def _save_debug_images(self, index, rgb, ob_mask, depth=None):
         try:
