@@ -13,9 +13,14 @@ from PIL import Image, ImageDraw
 import numpy as np
 from zerith.zerith_mesh_utils import blue_z_plane_angle_deg
 from zerith.mask_angle_match import (
+    DEPTH_WINDOW,
     build_visualization,
+    depth2xyz,
     load_binary_mask,
+    load_center_point,
+    load_depth_map,
     predict_angle_multi_ref,
+    predict_center_point,
     to_undirected_angle,
 )
 
@@ -30,12 +35,28 @@ CAT5_REF_FLIP_MASK_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     'assets', 'imgs', 'zero_flip.png',
 )
+# Each reference carries the anchor point of the part in its own pixels, plus
+# the scene depth of that capture used to turn the predicted anchor into XYZ.
+CAT5_REF_CENTER_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'assets', 'imgs', 'zero.txt',
+)
+CAT5_REF_FLIP_CENTER_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'assets', 'imgs', 'zero_flip.txt',
+)
+CAT5_REF_DEPTH_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'assets', 'imgs', 'zerith_ref_depth.npy',
+)
 _CAT5_REF_TITLES = ('reference 0deg', 'reference flip')
 _cat5_ref_masks = None
+_cat5_ref_centers = None
+_cat5_ref_depth = None
 
 
-def cat5_mask_angle_deg(ob_mask):
-    """Estimate the elbow pipe's in-plane angle from its segmentation mask.
+def cat5_mask_angle_deg(ob_mask, K):
+    """Estimate the elbow pipe's in-plane angle and anchor from its mask.
 
     The pose-derived +Z axis is unreliable for the L-shaped elbow pipe, so the
     angle is read directly from the mask.  Because the part can be flipped over
@@ -45,22 +66,49 @@ def cat5_mask_angle_deg(ob_mask):
     the convention matches ``blue_z_plane_angle_deg`` (clockwise-positive,
     ``[-90, 90]``).
 
-    Returns ``(angle_deg, iou, ref_title, visualization)``; ``ref_title`` names
-    the winning reference and ``visualization`` is the three-panel match figure
-    so callers can persist it for debugging.
+    ``K`` is the camera intrinsics of the frame the mask comes from.
+
+    Returns ``(angle_deg, iou, ref_title, visualization, center, xyz)``;
+    ``ref_title`` names the winning reference and ``visualization`` is the
+    three-panel match figure so callers can persist it for debugging.  ``center``
+    is the winning reference's anchor point mapped back to the pixels of
+    ``ob_mask``, and ``xyz`` is that pixel read off the reference depth map in
+    the camera frame, in metres -- ``NaN`` when no depth reading around it is
+    valid.
     """
-    global _cat5_ref_masks
+    global _cat5_ref_masks, _cat5_ref_centers, _cat5_ref_depth
     if _cat5_ref_masks is None:
         _cat5_ref_masks = [
             load_binary_mask(CAT5_REF_MASK_PATH),
             load_binary_mask(CAT5_REF_FLIP_MASK_PATH),
         ]
+        _cat5_ref_centers = [
+            load_center_point(CAT5_REF_CENTER_PATH),
+            load_center_point(CAT5_REF_FLIP_CENTER_PATH),
+        ]
+    if _cat5_ref_depth is None:
+        _cat5_ref_depth = load_depth_map(CAT5_REF_DEPTH_PATH)
     cv2_angle, iou, ref_index, _, _ = predict_angle_multi_ref(ob_mask, _cat5_ref_masks)
     ref_title = _CAT5_REF_TITLES[ref_index]
-    figure = build_visualization(
-        ob_mask, _cat5_ref_masks[ref_index], cv2_angle, iou, ref_title=ref_title
+    center = predict_center_point(
+        ob_mask, _cat5_ref_masks[ref_index], _cat5_ref_centers[ref_index], cv2_angle
     )
-    return to_undirected_angle(cv2_angle), iou, ref_title, figure
+    xyz = depth2xyz(
+        _cat5_ref_depth,
+        center,
+        np.asarray(K, dtype=np.float64),
+        window=DEPTH_WINDOW,
+    )
+    figure = build_visualization(
+        ob_mask,
+        _cat5_ref_masks[ref_index],
+        cv2_angle,
+        iou,
+        ref_title=ref_title,
+        center=center,
+        xyz=xyz,
+    )
+    return to_undirected_angle(cv2_angle), iou, ref_title, figure, center, xyz
 
 
 class ZerithServer:
@@ -371,7 +419,9 @@ class ZerithServer:
                     mask_angle_iou,
                     mask_angle_ref,
                     mask_angle_figure,
-                ) = cat5_mask_angle_deg(ob_mask)
+                    mask_center,
+                    mask_xyz,
+                ) = cat5_mask_angle_deg(ob_mask, K)
             except (ValueError, FileNotFoundError) as angle_error:
                 logging.warning(
                     "EVENT=CAT5_MASK_ANGLE_FAILED error=%s", angle_error
@@ -392,6 +442,44 @@ class ZerithServer:
                     mask_angle_path,
                     mask_angle_saved,
                 )
+                # The mask-derived anchor does not inherit the registration
+                # error along the optical axis, so it replaces the translation
+                # of the pose returned to the client; the rotation is kept.
+                # Only a valid reading (no depth hole under the anchor) is
+                # allowed to touch the pose.
+                if np.isfinite(mask_xyz).all():
+                    pose_array[:3, 3] = mask_xyz
+                    if torch.is_tensor(pose):
+                        pose = pose.detach().clone()
+                        pose[:3, 3] = torch.as_tensor(
+                            mask_xyz, dtype=pose.dtype, device=pose.device
+                        )
+                    else:
+                        pose = pose_array
+                    np.savetxt(pose_path, pose_array)
+                    logging.info(
+                        "EVENT=CAT5_MASK_XYZ category=%s debug_index=%d "
+                        "center=[%.2f,%.2f] xyz_m=%s pose_path=%s",
+                        category_id,
+                        index,
+                        mask_center[0],
+                        mask_center[1],
+                        json.dumps(
+                            [round(float(v), 6) for v in mask_xyz],
+                            separators=(",", ":"),
+                        ),
+                        pose_path,
+                    )
+                else:
+                    logging.warning(
+                        "EVENT=CAT5_MASK_XYZ_INVALID category=%s debug_index=%d "
+                        "center=[%.2f,%.2f] reason=no_valid_reference_depth "
+                        "action=keep_foundationpose_translation",
+                        category_id,
+                        index,
+                        mask_center[0],
+                        mask_center[1],
+                    )
         return {
             'status': 'success',
             'pose': pose,
