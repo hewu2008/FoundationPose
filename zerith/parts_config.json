@@ -18,7 +18,7 @@
     {
       "id": "cat5",
       "yolo_class_name": "elbow_pipe",
-      "mesh_file": "../assets/category_5_1.obj"
+      "mesh_file": "../assets/category_5_2_m.obj"
     },
     {
       "id": "cat6",
