@@ -56,7 +56,7 @@ class ZerithPoseEstimator:
             scorer=self._scorer,
             refiner=self._refiner,
             debug_dir=self._debug_dir,
-            debug=0,
+            debug=2,
             glctx=self._glctx,
         )
         return _ObjectState(
