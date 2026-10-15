@@ -329,8 +329,9 @@ def predict_center_xyz(
     first.
 
     Returns ``np.array([X, Y, Z])`` with X right, Y down and Z along the optical
-    axis, in the reference camera frame.  It is ``NaN`` only when no depth
-    reading around the center pixel is valid (hole or occluded).
+    axis, in the reference camera frame, in **meters** (the overlay and the
+    console report convert it to mm).  It is ``NaN`` only when no depth reading
+    around the center pixel is valid (hole or occluded).
     """
     center = predict_center_point(query_mask, ref_mask, ref_center, angle_deg)
     return depth2xyz(ref_depth, center, K, window=window)
@@ -505,7 +506,7 @@ def build_visualization(
     if xyz is not None:
         cv2.putText(
             overlay,
-            f"xyz=({xyz[0]:.3f}, {xyz[1]:.3f}, {xyz[2]:.3f})m",
+            f"xyz=({xyz[0] * 1000:.1f}, {xyz[1] * 1000:.1f}, {xyz[2] * 1000:.1f})mm",
             (6, 66),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.46,
@@ -584,7 +585,7 @@ def main() -> None:
         line = (
             f"{query_path.name}: angle={angle_signed:.1f} deg  IoU={iou:.3f}  "
             f"center=({center[0]:.1f}, {center[1]:.1f})  "
-            f"xyz=({xyz[0]:.3f}, {xyz[1]:.3f}, {xyz[2]:.3f})m  "
+            f"xyz=({xyz[0] * 1000:.1f}, {xyz[1] * 1000:.1f}, {xyz[2] * 1000:.1f})mm  "
             f"ref={ref_titles[ref_index]}  -> {out_path}"
         )
         print(line)
