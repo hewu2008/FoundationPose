@@ -13,6 +13,11 @@ Pipeline (as specified):
   4. render a side-by-side visualization of the reference, the query, the best
      rotated overlay and the predicted angle.
 
+The same match also carries the part's center point: each reference image comes
+with an ``x y`` text file giving a point rigidly attached to the part, and
+:func:`predict_center_point` transfers that point onto the query using the
+estimated angle, returning its xy coordinates in the query image.
+
 A single reference cannot describe a part that has been flipped over, whose
 projected silhouette is mirrored.  Two references are therefore searched: the
 nominal 0-degree mask and its flipped counterpart, and the match with the
@@ -29,6 +34,8 @@ Usage:
         --query runtime/debug_zerith_server/mask/1.png \
         --ref assets/imgs/zero.png \
         --ref_flip assets/imgs/zero_flip.png \
+        --ref_center assets/imgs/zero.txt \
+        --ref_flip_center assets/imgs/zero_flip.txt \
         --out_dir runtime/mask_angle
 """
 
@@ -42,6 +49,8 @@ import numpy as np
 
 DEFAULT_REF = "assets/imgs/zero.png"
 DEFAULT_REF_FLIP = "assets/imgs/zero_flip.png"
+DEFAULT_REF_CENTER = "assets/imgs/zero.txt"
+DEFAULT_REF_FLIP_CENTER = "assets/imgs/zero_flip.txt"
 DEFAULT_OUT_DIR = "runtime/mask_angle"
 
 CANVAS = 256
@@ -62,6 +71,26 @@ def load_binary_mask(path) -> np.ndarray:
     if not mask.any():
         raise ValueError(f"Mask has no foreground pixels: {path}")
     return mask
+
+
+def load_center_point(path) -> np.ndarray:
+    """Load an ``x y`` text file and return the point as ``np.array([x, y])``.
+
+    The file holds the xy coordinates, in the reference image's own pixel
+    frame, of a point rigidly attached to the part (``assets/imgs/zero.txt``
+    for ``zero.png``, ``assets/imgs/zero_flip.txt`` for ``zero_flip.png``).
+    """
+    values = Path(path).read_text(encoding="utf-8").split()
+    if len(values) < 2:
+        raise ValueError(f"Center-point file must contain two numbers: {path}")
+    return np.array([float(values[0]), float(values[1])], dtype=np.float64)
+
+
+def _foreground_centroid(mask: np.ndarray) -> np.ndarray:
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        raise ValueError("Cannot take the centroid of an empty mask")
+    return np.array([xs.mean(), ys.mean()], dtype=np.float64)
 
 
 def normalize_mask(
@@ -190,6 +219,44 @@ def predict_angle_multi_ref(
     return best
 
 
+def predict_center_point(
+    query_mask: np.ndarray,
+    ref_mask: np.ndarray,
+    ref_center,
+    angle_deg: float,
+) -> np.ndarray:
+    """Transfer the reference's center point onto the query, returning ``(x, y)``.
+
+    ``ref_center`` is the reference image coordinate from :func:`load_center_point`
+    -- a point rigidly attached to the part.  Matching the angle only says how the
+    reference must be *rotated*; translating it onto the query needs the centers
+    of the two masks.  ``normalize_mask`` already aligns both foreground
+    centroids on one canvas, so the mapping boils down to a rotation about the
+    centroid plus the area ratio that the normalization removes:
+
+        query_center = query_centroid
+                     + sqrt(query_area / ref_area) * R(angle) * (ref_center - ref_centroid)
+
+    The area ratio is the scale factor between the two masks (a fixed area is
+    rotation invariant, so it equals their equivalent-diameter ratio); ``R`` is
+    the same ``cv2`` rotation applied to the reference, so the offset from the
+    centroid turns exactly as the object does.  Because both the reference and
+    the query are mapped to a common size, ``canvas`` and ``target_area`` cancel
+    out and the result does not depend on them.
+
+    Pass the reference that actually won the match (nominal or flipped) together
+    with its own center-point file: a flipped part carries a mirrored anchor, so
+    mixing the two references yields a mirrored center.
+    """
+    query_area = max(float(query_mask.sum()), 1.0)
+    ref_area = max(float(ref_mask.sum()), 1.0)
+    scale = float(np.sqrt(query_area / ref_area))
+
+    offset = np.asarray(ref_center, dtype=np.float64) - _foreground_centroid(ref_mask)
+    offset = _rotation_matrix(angle_deg)[:, :2] @ (offset * scale)
+    return _foreground_centroid(query_mask) + offset
+
+
 def to_signed_angle(angle_deg: float) -> float:
     """Convert a cv2 rotation angle to the clockwise-positive signed range.
 
@@ -249,6 +316,22 @@ def _draw_axis(panel: np.ndarray, direction: np.ndarray, color) -> None:
     cv2.line(panel, p1, p2, color, 1, cv2.LINE_AA)
 
 
+def _draw_point(panel: np.ndarray, point, color) -> None:
+    x, y = int(round(float(point[0]))), int(round(float(point[1])))
+    cv2.drawMarker(panel, (x, y), color, cv2.MARKER_CROSS, 9, 1, cv2.LINE_AA)
+    cv2.circle(panel, (x, y), 6, color, 1, cv2.LINE_AA)
+
+
+def _to_canvas_frame(
+    point, mask: np.ndarray, canvas: int = CANVAS, target_area: float = TARGET_AREA
+) -> np.ndarray:
+    """Map an image-space point of ``mask`` onto the normalized canvas frame."""
+    scale = float(np.sqrt(target_area / max(float(mask.sum()), 1.0)))
+    center = (canvas - 1) / 2.0
+    offset = np.asarray(point, dtype=np.float64) - _foreground_centroid(mask)
+    return np.array([center, center], dtype=np.float64) + offset * scale
+
+
 def _panel(mask: np.ndarray, title: str, axis=None) -> np.ndarray:
     canvas = mask.shape[0]
     panel = np.zeros((canvas, canvas, 3), dtype=np.uint8)
@@ -267,6 +350,7 @@ def build_visualization(
     canvas: int = CANVAS,
     target_area: float = TARGET_AREA,
     ref_title: str = "reference 0deg",
+    center=None,
 ) -> np.ndarray:
     """Three-panel figure: reference (0 deg), query, and the best overlay.
 
@@ -277,6 +361,11 @@ def build_visualization(
     clockwise-positive convention: ``angle`` is the signed, directed angle from
     :func:`to_signed_angle`, and ``line`` is the same orientation folded onto an
     undirected line by :func:`to_undirected_angle`.
+
+    ``center``, when given, is the query center point from
+    :func:`predict_center_point` in *query image* pixels; it is mapped onto the
+    normalized canvas and marked on the overlay so the transferred anchor can be
+    checked against the query silhouette.
     """
     query = normalize_mask(query_mask, canvas=canvas, target_area=target_area)
     ref = normalize_mask(ref_mask, canvas=canvas, target_area=target_area)
@@ -296,6 +385,12 @@ def build_visualization(
     overlay[rotated & ~query] = (80, 210, 80)   # ref only   -> green
     overlay[query & rotated] = (60, 230, 230)   # overlap    -> yellow
     _draw_axis(overlay, predicted_axis, (0, 200, 255))
+    if center is not None:
+        _draw_point(
+            overlay,
+            _to_canvas_frame(center, query_mask, canvas=canvas, target_area=target_area),
+            (255, 0, 255),
+        )
     cv2.putText(
         overlay,
         f"angle={to_signed_angle(angle_deg):.1f}deg  IoU={iou:.3f}",
@@ -316,6 +411,17 @@ def build_visualization(
         1,
         cv2.LINE_AA,
     )
+    if center is not None:
+        cv2.putText(
+            overlay,
+            f"center=({center[0]:.1f}, {center[1]:.1f})",
+            (6, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.46,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
 
     pad = np.full((canvas, 8, 3), 40, dtype=np.uint8)
     return np.hstack([p_ref, pad, p_query, pad, overlay])
@@ -332,6 +438,8 @@ def main() -> None:
     parser.add_argument("--query", required=True, help="mask image file or a directory of masks")
     parser.add_argument("--ref", default=DEFAULT_REF, help="0-degree reference mask image")
     parser.add_argument("--ref_flip", default=DEFAULT_REF_FLIP, help="flipped reference mask image")
+    parser.add_argument("--ref_center", default=DEFAULT_REF_CENTER, help="center-point file for --ref ('x y' in reference pixels)")
+    parser.add_argument("--ref_flip_center", default=DEFAULT_REF_FLIP_CENTER, help="center-point file for --ref_flip")
     parser.add_argument("--out_dir", default=DEFAULT_OUT_DIR, help="directory for visualized results")
     parser.add_argument("--step_deg", type=float, default=STEP_DEG, help="rotation search step in degrees")
     parser.add_argument("--canvas", type=int, default=CANVAS, help="square canvas size after normalization")
@@ -339,6 +447,7 @@ def main() -> None:
     args = parser.parse_args()
 
     ref_masks = [load_binary_mask(Path(args.ref)), load_binary_mask(Path(args.ref_flip))]
+    ref_centers = [load_center_point(Path(args.ref_center)), load_center_point(Path(args.ref_flip_center))]
     ref_titles = ["reference 0deg", "reference flip"]
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -353,6 +462,8 @@ def main() -> None:
             canvas=args.canvas,
             target_area=args.target_area,
         )
+        # the winning reference carries both the rotation and its own anchor point
+        center = predict_center_point(query_mask, ref_masks[ref_index], ref_centers[ref_index], angle)
         # ``angle`` stays the cv2 (counter-clockwise) rotation used to build the
         # overlay; the reported value is re-expressed clockwise-positive.
         angle_signed = to_signed_angle(angle)
@@ -364,11 +475,13 @@ def main() -> None:
             canvas=args.canvas,
             target_area=args.target_area,
             ref_title=ref_titles[ref_index],
+            center=center,
         )
         out_path = out_dir / f"{query_path.stem}_angle.png"
         cv2.imwrite(str(out_path), figure)
         line = (
             f"{query_path.name}: angle={angle_signed:.1f} deg  IoU={iou:.3f}  "
+            f"center=({center[0]:.1f}, {center[1]:.1f})  "
             f"ref={ref_titles[ref_index]}  -> {out_path}"
         )
         print(line)
