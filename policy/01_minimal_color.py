@@ -8,7 +8,9 @@
 3. Adds an "image calibration mode": shows a calibration image loaded from a
    fixed path side by side with the live camera frame (live on the left,
    reference on the right, heights matched), so the camera can be visually
-   checked against the calibrated state.
+   checked against the calibrated state. Two points picked with the left mouse
+   button on the reference panel define a line, which is mirrored onto the live
+   view at the same normalized position.
 * [Usage]
 1. Set GRPC_TARGET to the real server IP address.
 2. Set CAMERA_NAME to the corresponding camera ID on the server.
@@ -16,6 +18,9 @@
    an absolute path).
 * [Hotkeys]
 - c : toggle image calibration mode (side-by-side view)
+- left click : pick points on the reference panel (2 points draw a line on both
+  panels; a 3rd click starts a new line)
+- r : clear the marked line
 - q : quit the preview
 """
 
@@ -35,6 +40,8 @@ from camera_client import CameraClient
 CALIB_IMAGE = "assets/imgs/zerith_ref_rgb.png"
 CALIB_GAP = 8                # width in pixels of the separator between the two panels
 CALIB_GAP_COLOR = 32         # separator color (grayscale value)
+LINE_COLOR = (0, 255, 0)     # color of the mouse-marked line (BGR)
+LINE_THICKNESS = 2           # thickness of the mouse-marked line
 
 
 def resolve_path(path):
@@ -57,14 +64,32 @@ def load_calibration_image(path):
     return img
 
 
-def compose_side_by_side(frame, calib):
-    """Place the live frame on the left and the calibration image on the right, matching heights."""
+def fit_width(image, target_h):
+    """Width of `image` when scaled to `target_h`, preserving its aspect ratio."""
+    return max(1, int(round(image.shape[1] * target_h / image.shape[0])))
+
+
+def norm_to_pixel(point, origin_x, panel_w, panel_h):
+    """Map a normalized [0, 1] coordinate to a pixel position inside a panel."""
+    u, v = point
+    return (int(round(origin_x + u * panel_w)), int(round(v * panel_h)))
+
+
+def compose_side_by_side(frame, calib, line_points=()):
+    """Left: live frame; right: reference image scaled to the same height.
+
+    The points in `line_points` are normalized reference coordinates; they are drawn
+    on both panels so the marked line can be compared between live and reference.
+
+    Returns (canvas, ref_geometry) where ref_geometry is (origin_x, width, height)
+    of the reference panel inside the canvas, used to map mouse clicks back.
+    """
     h, w = frame.shape[:2]
-    calib_h, calib_w = calib.shape[:2]
-    new_w = max(1, int(round(calib_w * h / calib_h)))
-    calib_resized = cv2.resize(calib, (new_w, h), interpolation=cv2.INTER_LINEAR)
+    ref_w = fit_width(calib, h)
+    ref_resized = cv2.resize(calib, (ref_w, h), interpolation=cv2.INTER_LINEAR)
     separator = np.full((h, CALIB_GAP, 3), CALIB_GAP_COLOR, dtype=np.uint8)
-    canvas = np.hstack([frame[..., :3], separator, calib_resized[..., :3]])
+    canvas = np.hstack([frame[..., :3], separator, ref_resized[..., :3]])
+
     cv2.putText(
         canvas, "LIVE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA,
     )
@@ -72,7 +97,16 @@ def compose_side_by_side(frame, calib):
         canvas, "REFERENCE", (w + CALIB_GAP + 10, 30),
         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA,
     )
-    return canvas
+
+    # Draw the marked points/line on both panels at the same normalized position
+    for origin_x, panel_w in ((0, w), (w + CALIB_GAP, ref_w)):
+        pixels = [norm_to_pixel(p, origin_x, panel_w, h) for p in line_points]
+        for pixel in pixels:
+            cv2.circle(canvas, pixel, 6, LINE_COLOR, 2, cv2.LINE_AA)
+        if len(pixels) == 2:
+            cv2.line(canvas, pixels[0], pixels[1], LINE_COLOR, LINE_THICKNESS, cv2.LINE_AA)
+
+    return canvas, (w + CALIB_GAP, ref_w, h)
 
 
 def main():
@@ -105,12 +139,33 @@ def main():
         print(f"[*] Loaded calibration image: {calib_path}")
     calib_mode = False               # image calibration mode toggle
 
+    # --- Mouse-marked line: points are stored as normalized [0, 1] reference coordinates ---
+    line_points = []
+    ref_geom = None                  # (origin_x, width, height) of the reference panel on screen
+
+    def on_mouse(event, x, y, flags, param):
+        nonlocal ref_geom
+        if event != cv2.EVENT_LBUTTONDOWN or ref_geom is None:
+            return                   # clicks are only meaningful in side-by-side mode
+        origin_x, panel_w, panel_h = ref_geom
+        if not (origin_x <= x < origin_x + panel_w and 0 <= y < panel_h):
+            return                   # only clicks on the reference panel are accepted
+        if len(line_points) >= 2:
+            line_points.clear()      # a third click starts a new line
+        line_points.append(((x - origin_x) / panel_w, y / panel_h))
+        print(f"[*] Point {len(line_points)} on reference: "
+              f"(u={line_points[-1][0]:.3f}, v={line_points[-1][1]:.3f})")
+
+    # Create the window up front so the mouse callback can be attached before the first frame
+    cv2.namedWindow("Color Viewer", cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback("Color Viewer", on_mouse)
+
     try:
         # 3. Start the client (gRPC handshake and WebRTC setup)
         print(f"[*] Connecting to server {GRPC_TARGET} ...")
         client.start()
         print(f"[+] Connected. Streaming from camera [{CAMERA_NAME}] ...")
-        print("[i] Hotkeys: c toggle calibration view / q quit")
+        print("[i] Hotkeys: c toggle calibration view / click reference to mark a line / r clear / q quit")
 
         while True:
             # 4. Fetch the latest color frame (returns (numpy_bgr_array, timestamp) or None)
@@ -121,8 +176,10 @@ def main():
                 display = img
 
                 # 5. Image calibration mode: show the reference image beside the live frame
+                geom = None
                 if calib_mode and calib_image is not None:
-                    display = compose_side_by_side(img, calib_image)
+                    display, geom = compose_side_by_side(img, calib_image, line_points)
+                ref_geom = geom
 
                 show_image("Color Viewer", display)
 
@@ -137,6 +194,9 @@ def main():
                 else:
                     calib_mode = not calib_mode
                     print(f"[*] Image calibration mode: {'ON' if calib_mode else 'OFF'}")
+            elif key == ord('r'):
+                line_points.clear()
+                print("[*] Cleared the marked line.")
 
     except Exception as e:
         print(f"\n[!] Runtime error: {e}")
