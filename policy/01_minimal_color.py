@@ -5,19 +5,17 @@
 1. Shows how to initialize a CameraClient and establish a connection.
 2. Demonstrates non-blocking retrieval of the latest color image (RGB) and
    displaying it with OpenCV.
-3. Adds an "image calibration mode": overlays a calibration image loaded from a
-   fixed path semi-transparently onto the live camera frame, so the camera can
-   be visually checked against the calibrated state. The overlay opacity is
-   adjustable at runtime.
+3. Adds an "image calibration mode": shows a calibration image loaded from a
+   fixed path side by side with the live camera frame (live on the left,
+   reference on the right, heights matched), so the camera can be visually
+   checked against the calibrated state.
 * [Usage]
 1. Set GRPC_TARGET to the real server IP address.
 2. Set CAMERA_NAME to the corresponding camera ID on the server.
 3. Set CALIB_IMAGE to the calibration image path (relative to the repo root or
    an absolute path).
 * [Hotkeys]
-- c : toggle image calibration mode (semi-transparent overlay)
-- [ : decrease calibration overlay opacity
-- ] : increase calibration overlay opacity
+- c : toggle image calibration mode (side-by-side view)
 - q : quit the preview
 """
 
@@ -35,8 +33,8 @@ from camera_client import CameraClient
 # --- Image calibration mode configuration ---
 # Calibration image path: a relative path resolves against the repo root, an absolute path is used as-is.
 CALIB_IMAGE = "assets/imgs/zerith_ref_rgb.png"
-CALIB_ALPHA_DEFAULT = 0.5   # initial calibration overlay opacity, range [0, 1]
-CALIB_ALPHA_STEP = 0.05     # opacity step applied per key press
+CALIB_GAP = 8                # width in pixels of the separator between the two panels
+CALIB_GAP_COLOR = 32         # separator color (grayscale value)
 
 
 def resolve_path(path):
@@ -59,9 +57,22 @@ def load_calibration_image(path):
     return img
 
 
-def blend_calibration(frame, calib, alpha):
-    """Blend the calibration image over the camera frame with the given opacity."""
-    return cv2.addWeighted(frame, 1.0 - alpha, calib, alpha, 0.0)
+def compose_side_by_side(frame, calib):
+    """Place the live frame on the left and the calibration image on the right, matching heights."""
+    h, w = frame.shape[:2]
+    calib_h, calib_w = calib.shape[:2]
+    new_w = max(1, int(round(calib_w * h / calib_h)))
+    calib_resized = cv2.resize(calib, (new_w, h), interpolation=cv2.INTER_LINEAR)
+    separator = np.full((h, CALIB_GAP, 3), CALIB_GAP_COLOR, dtype=np.uint8)
+    canvas = np.hstack([frame[..., :3], separator, calib_resized[..., :3]])
+    cv2.putText(
+        canvas, "LIVE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas, "REFERENCE", (w + CALIB_GAP + 10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA,
+    )
+    return canvas
 
 
 def main():
@@ -92,16 +103,14 @@ def main():
         print(f"[!] Failed to load calibration image [{calib_path}]; 'c' will not enable calibration mode.")
     else:
         print(f"[*] Loaded calibration image: {calib_path}")
-    calib_fitted = {}                # cache of the calibration image resized per frame size
     calib_mode = False               # image calibration mode toggle
-    alpha = CALIB_ALPHA_DEFAULT      # calibration overlay opacity
 
     try:
         # 3. Start the client (gRPC handshake and WebRTC setup)
         print(f"[*] Connecting to server {GRPC_TARGET} ...")
         client.start()
         print(f"[+] Connected. Streaming from camera [{CAMERA_NAME}] ...")
-        print("[i] Hotkeys: c toggle calibration overlay / [ ] opacity / q quit")
+        print("[i] Hotkeys: c toggle calibration view / q quit")
 
         while True:
             # 4. Fetch the latest color frame (returns (numpy_bgr_array, timestamp) or None)
@@ -111,19 +120,9 @@ def main():
                 img, ts = data
                 display = img
 
-                # 5. Image calibration mode: overlay the calibration image semi-transparently
+                # 5. Image calibration mode: show the reference image beside the live frame
                 if calib_mode and calib_image is not None:
-                    image_size = (img.shape[1], img.shape[0])
-                    if image_size not in calib_fitted:
-                        calib_fitted[image_size] = cv2.resize(
-                            calib_image, image_size, interpolation=cv2.INTER_LINEAR
-                        )
-                    display = blend_calibration(img, calib_fitted[image_size], alpha)
-                    cv2.putText(
-                        display, f"CALIB  alpha={alpha:.2f}",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                        (0, 255, 255), 2, cv2.LINE_AA,
-                    )
+                    display = compose_side_by_side(img, calib_image)
 
                 show_image("Color Viewer", display)
 
@@ -138,12 +137,6 @@ def main():
                 else:
                     calib_mode = not calib_mode
                     print(f"[*] Image calibration mode: {'ON' if calib_mode else 'OFF'}")
-            elif key == ord('['):
-                alpha = max(0.0, alpha - CALIB_ALPHA_STEP)
-                print(f"[*] Calibration overlay opacity: {alpha:.2f}")
-            elif key == ord(']'):
-                alpha = min(1.0, alpha + CALIB_ALPHA_STEP)
-                print(f"[*] Calibration overlay opacity: {alpha:.2f}")
 
     except Exception as e:
         print(f"\n[!] Runtime error: {e}")
