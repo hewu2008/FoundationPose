@@ -34,7 +34,7 @@ from camera_client import CameraClient
 
 # --- Image calibration mode configuration ---
 # Calibration image path: a relative path resolves against the repo root, an absolute path is used as-is.
-CALIB_IMAGE = "assets/imgs/zero.png"
+CALIB_IMAGE = "assets/imgs/zerith_ref_rgb.png"
 CALIB_ALPHA_DEFAULT = 0.5   # initial calibration overlay opacity, range [0, 1]
 CALIB_ALPHA_STEP = 0.05     # opacity step applied per key press
 
