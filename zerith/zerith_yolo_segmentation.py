@@ -88,6 +88,7 @@ class ZerithYoloSegmentation:
         parts_config=DEFAULT_PARTS_CONFIG,
         confidence=0.6,
         iou_threshold=0.7,
+        min_mask_area_ratio=0.005,
         device=None,
         detector=None,
         keep_detector_resident=True,
@@ -97,6 +98,17 @@ class ZerithYoloSegmentation:
         )
         self.confidence = float(confidence)
         self.iou_threshold = float(iou_threshold)
+        # Fraction of the frame area a detection mask must cover to be kept.
+        # The YOLO model is confident on small bright speckles (lamp borders,
+        # rim highlights) that are far smaller than any real part, so a pure
+        # confidence threshold lets them through.  The ratio keeps the cutoff
+        # meaningful if the capture resolution changes.
+        self.min_mask_area_ratio = float(min_mask_area_ratio)
+        if not 0.0 <= self.min_mask_area_ratio <= 1.0:
+            raise ValueError(
+                "min_mask_area_ratio must be within [0, 1], got "
+                f"{self.min_mask_area_ratio}"
+            )
         self.keep_detector_resident = bool(keep_detector_resident)
         self.weight_path = str(Path(weight_path).expanduser().resolve())
         if detector is None:
@@ -245,9 +257,13 @@ class ZerithYoloSegmentation:
         detection_id = self._detection_id
         self._detection_id += 1
         height, width = rgb.shape[:2]
+        min_mask_pixels = max(
+            1, int(round(self.min_mask_area_ratio * height * width))
+        )
         boxes = []
         masks = {}
         records = []
+        dropped_small = 0
 
         for raw_index, raw in enumerate(raw_detections):
             class_name = str(raw.get("class_name", ""))
@@ -267,6 +283,23 @@ class ZerithYoloSegmentation:
             if not mask.any():
                 logging.warning(
                     "Ignoring empty YOLO mask for %s", class_name
+                )
+                continue
+
+            mask_area = int(mask.sum())
+            if mask_area < min_mask_pixels:
+                # Too small to be a real part; these are highlights/edges the
+                # detector fires on at high confidence.
+                dropped_small += 1
+                logging.info(
+                    "Ignoring undersized YOLO mask for %s: %d px < %d px "
+                    "(%.3f%% < %.3f%% of the frame), confidence=%.3f",
+                    class_name,
+                    mask_area,
+                    min_mask_pixels,
+                    mask_area / max(height * width, 1) * 100.0,
+                    self.min_mask_area_ratio * 100.0,
+                    float(raw.get("confidence", 0.0)),
                 )
                 continue
 
@@ -325,9 +358,12 @@ class ZerithYoloSegmentation:
             "records": records,
         }
         logging.info(
-            "YOLO detection %d completed: %d mapped instances",
+            "YOLO detection %d completed: %d mapped instances "
+            "(dropped %d undersized, min_mask_pixels=%d)",
             detection_id,
             len(boxes),
+            dropped_small,
+            min_mask_pixels,
         )
         return boxes
 

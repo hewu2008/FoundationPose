@@ -36,6 +36,16 @@ def parse_args():
     parser.add_argument('--yolo_weights', type=str, default=str(DEFAULT_YOLO_WEIGHTS), help='YOLO26 instance-segmentation weights')
     parser.add_argument('--yolo_confidence', type=float, default=0.6, help='YOLO confidence threshold')
     parser.add_argument('--yolo_iou', type=float, default=0.7, help='YOLO NMS IoU threshold')
+    parser.add_argument(
+        '--yolo_min_area_ratio',
+        type=float,
+        default=0.005,
+        help=(
+            'Drop detections whose instance mask covers less than this '
+            'fraction of the frame (default 0.005 = 0.5%%; 1536 px on a '
+            '640x480 capture). Set 0 to disable size filtering.'
+        ),
+    )
     parser.add_argument('--yolo_device', type=str, default=None, help='YOLO inference device; defaults to cuda:0 when available')
     parser.add_argument(
         '--offload_yolo',
@@ -77,6 +87,7 @@ def create_segmentation(
     parts_config,
     confidence,
     iou_threshold,
+    min_mask_area_ratio=0.005,
     device=None,
     keep_detector_resident=True,
 ):
@@ -85,6 +96,7 @@ def create_segmentation(
         parts_config=parts_config,
         confidence=confidence,
         iou_threshold=iou_threshold,
+        min_mask_area_ratio=min_mask_area_ratio,
         device=device,
         keep_detector_resident=keep_detector_resident,
     )
@@ -116,6 +128,7 @@ def main(args):
             parts_config=args.parts_config,
             confidence=args.yolo_confidence,
             iou_threshold=args.yolo_iou,
+            min_mask_area_ratio=args.yolo_min_area_ratio,
             device=args.yolo_device,
             keep_detector_resident=not args.offload_yolo,
         )
