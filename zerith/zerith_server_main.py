@@ -46,6 +46,16 @@ def parse_args():
             '640x480 capture). Set 0 to disable size filtering.'
         ),
     )
+    parser.add_argument(
+        '--yolo_left_edge_margin',
+        type=int,
+        default=0,
+        help=(
+            'Drop detections whose box left edge starts within this many '
+            'pixels of the frame left border (truncated objects). '
+            '0 = disabled (default).'
+        ),
+    )
     parser.add_argument('--yolo_device', type=str, default=None, help='YOLO inference device; defaults to cuda:0 when available')
     parser.add_argument(
         '--offload_yolo',
@@ -88,6 +98,7 @@ def create_segmentation(
     confidence,
     iou_threshold,
     min_mask_area_ratio=0.005,
+    left_edge_margin=0,
     device=None,
     keep_detector_resident=True,
 ):
@@ -97,6 +108,7 @@ def create_segmentation(
         confidence=confidence,
         iou_threshold=iou_threshold,
         min_mask_area_ratio=min_mask_area_ratio,
+        left_edge_margin=left_edge_margin,
         device=device,
         keep_detector_resident=keep_detector_resident,
     )
@@ -129,6 +141,7 @@ def main(args):
             confidence=args.yolo_confidence,
             iou_threshold=args.yolo_iou,
             min_mask_area_ratio=args.yolo_min_area_ratio,
+            left_edge_margin=args.yolo_left_edge_margin,
             device=args.yolo_device,
             keep_detector_resident=not args.offload_yolo,
         )

@@ -89,6 +89,7 @@ class ZerithYoloSegmentation:
         confidence=0.6,
         iou_threshold=0.7,
         min_mask_area_ratio=0.005,
+        left_edge_margin=0,
         device=None,
         detector=None,
         keep_detector_resident=True,
@@ -108,6 +109,13 @@ class ZerithYoloSegmentation:
             raise ValueError(
                 "min_mask_area_ratio must be within [0, 1], got "
                 f"{self.min_mask_area_ratio}"
+            )
+        # Detections whose box starts closer than this many pixels to the left
+        # image edge are truncated and unreliable, so they are dropped. 0 = off.
+        self.left_edge_margin = int(left_edge_margin)
+        if self.left_edge_margin < 0:
+            raise ValueError(
+                f"left_edge_margin must be >= 0, got {self.left_edge_margin}"
             )
         self.keep_detector_resident = bool(keep_detector_resident)
         self.weight_path = str(Path(weight_path).expanduser().resolve())
@@ -301,6 +309,7 @@ class ZerithYoloSegmentation:
         masks = {}
         records = []
         dropped_small = 0
+        dropped_edge = 0
 
         for raw_index, raw in enumerate(raw_detections):
             class_name = str(raw.get("class_name", ""))
@@ -353,6 +362,20 @@ class ZerithYoloSegmentation:
                 )
                 continue
 
+            if self.left_edge_margin > 0 and x1 < self.left_edge_margin:
+                # Box touches the left frame edge; the object is truncated and
+                # the pose estimate would be unreliable.
+                dropped_edge += 1
+                logging.info(
+                    "Ignoring left-edge YOLO mask for %s: x1=%d < "
+                    "left_edge_margin=%d, confidence=%.3f",
+                    class_name,
+                    x1,
+                    self.left_edge_margin,
+                    float(raw.get("confidence", 0.0)),
+                )
+                continue
+
             mask_id = f"{detection_id}:{raw_index}"
             confidence = float(raw.get("confidence", 0.0))
             box = {
@@ -396,10 +419,11 @@ class ZerithYoloSegmentation:
         }
         logging.info(
             "YOLO detection %d completed: %d mapped instances "
-            "(dropped %d undersized, min_mask_pixels=%d)",
+            "(dropped %d undersized, %d left-edge, min_mask_pixels=%d)",
             detection_id,
             len(boxes),
             dropped_small,
+            dropped_edge,
             min_mask_pixels,
         )
         return boxes
