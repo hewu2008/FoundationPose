@@ -15,7 +15,7 @@ python zerith/zerith_server_main.py \
     --yolo_weights assets/best-v2_20261017.pt \
     --yolo_confidence 0.7 \
     --yolo_iou 0.7 \
-    --yolo_min_area_ratio 0.01 \
+    --yolo_min_area_ratio 0.0114 \
     --parts_config "zerith/parts_config.json" \
     --debug_dir "$DEBUG_DIR" \
     --log_file "$LOG_FILE" \
