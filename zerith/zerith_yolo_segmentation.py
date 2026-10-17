@@ -235,6 +235,37 @@ class ZerithYoloSegmentation:
         second_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
         return intersection / (first_area + second_area - intersection)
 
+    def _apply_box_nms(self, raw_detections, iou_threshold):
+        """Class-wise box NMS on raw YOLO detections, highest confidence first.
+
+        Keeps a detection only when it has no higher-confidence detection of the
+        same class overlapping it above ``iou_threshold``.  Returns a new list.
+        """
+        if not raw_detections:
+            return []
+        sorted_indexes = sorted(
+            range(len(raw_detections)),
+            key=lambda index: raw_detections[index].get("confidence", 0.0),
+            reverse=True,
+        )
+        kept = []
+        suppressed = set()
+        for index in sorted_indexes:
+            if index in suppressed:
+                continue
+            current = raw_detections[index]
+            current_class = current.get("class_id")
+            kept.append(current)
+            for other_index in sorted_indexes:
+                if other_index in suppressed or other_index == index:
+                    continue
+                other = raw_detections[other_index]
+                if other.get("class_id") != current_class:
+                    continue
+                if self._box_iou(current["bbox"], other["bbox"]) >= iou_threshold:
+                    suppressed.add(other_index)
+        return kept
+
     @staticmethod
     def _as_rgb_array(image):
         if isinstance(image, Image.Image):
@@ -252,6 +283,12 @@ class ZerithYoloSegmentation:
             bgr,
             confidence=self.confidence,
             iou_thresh=self.iou_threshold,
+        )
+        # The ultralytics NMS requested via iou_thresh is not applied for the
+        # YOLO26 checkpoint (near-identical duplicate boxes survive), so run a
+        # manual class-wise box NMS before mapping detections to parts.
+        raw_detections = self._apply_box_nms(
+            raw_detections, self.iou_threshold
         )
 
         detection_id = self._detection_id

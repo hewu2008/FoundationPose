@@ -12,8 +12,8 @@ mkdir -p "runtime"
 # /home/chery/gzl/jszn/Foundation_file/Demo_Detector/pretrained_weights/last_20260810.pt 
 
 python zerith/zerith_server_main.py \
-    --yolo_weights assets/best.pt \
-    --yolo_confidence 0.8 \
+    --yolo_weights assets/best-v2_20261017.pt \
+    --yolo_confidence 0.7 \
     --yolo_iou 0.7 \
     --yolo_min_area_ratio 0.005 \
     --parts_config "zerith/parts_config.json" \
